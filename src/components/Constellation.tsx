@@ -43,10 +43,12 @@ export const Constellation: React.FC<ConstellationProps> = ({ nodes, centerNode,
   const [hoverNode, setHoverNode] = useState<string | null>(null);
   const settledReportedRef = useRef<boolean>(false);
 
-  // Reset reported flag when nodes change
+  // Reset reported flag when node structure changes (not simple reference changes)
+  const nodeIdsStr = useMemo(() => nodes.map(n => n.id).sort().join(','), [nodes]);
+
   useEffect(() => {
     settledReportedRef.current = false;
-  }, [nodes]);
+  }, [nodeIdsStr]);
 
   // Handle Container Resize responsively using ResizeObserver and Window Resize Event
   useEffect(() => {

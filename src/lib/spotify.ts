@@ -17,12 +17,41 @@ export interface SpotifyTrackInfo {
 }
 
 export async function fetchTrackFromSpotify(trackId: string): Promise<SpotifyTrackInfo | null> {
+  const cleanTrackId = trackId.replace('spotify:track:', '');
+
+  // Tier 1: If browser has a valid Spotify User Access Token, perform direct client-side fetch.
+  // This achieves zero backend dependency, maximum speed, and 100% reliable loading.
+  const userToken = getAccessToken();
+  if (userToken) {
+    try {
+      const response = await fetch(`https://api.spotify.com/v1/tracks/${cleanTrackId}`, {
+        headers: {
+          Authorization: `Bearer ${userToken}`,
+        },
+      });
+      if (response.ok) {
+        const data = await response.json();
+        return {
+          name: data.name,
+          preview_url: data.preview_url,
+          album_art: data.album.images[0]?.url || '',
+          artists: data.artists.map((a: any) => a.name),
+          external_url: data.external_urls.spotify,
+        };
+      }
+      console.warn('Spotify Direct Fetch failed (Access token likely expired or invalid). Falling back to server proxy.');
+    } catch (directError) {
+      console.error('Failed to fetch directly from Spotify API:', directError);
+    }
+  }
+
+  // Tier 2 Fallback: If not logged in or direct API fetch failed, request via the backend proxy server.
   try {
-    const res = await fetch(`${SERVER_URL}/api/track/${trackId}`);
+    const res = await fetch(`${SERVER_URL}/api/track/${cleanTrackId}`);
     if (!res.ok) return null;
     return res.json();
   } catch (error) {
-    console.error('Failed to fetch track from Spotify:', error);
+    console.error('Failed to fetch track from Spotify proxy server:', error);
     return null;
   }
 }
@@ -47,7 +76,9 @@ async function spotifyFetch(url: string, options: RequestInit = {}): Promise<Res
 
 export async function saveTrack(trackId: string): Promise<boolean> {
   try {
-    const res = await spotifyFetch(`https://api.spotify.com/v1/me/tracks?ids=${trackId}`, {
+    const cleanId = trackId.replace('spotify:track:', '');
+    const encodedUri = encodeURIComponent(`spotify:track:${cleanId}`);
+    const res = await spotifyFetch(`https://api.spotify.com/v1/me/library?uris=${encodedUri}`, {
       method: 'PUT',
     });
     if (!res.ok) {
@@ -64,7 +95,9 @@ export async function saveTrack(trackId: string): Promise<boolean> {
 
 export async function removeSavedTrack(trackId: string): Promise<boolean> {
   try {
-    const res = await spotifyFetch(`https://api.spotify.com/v1/me/tracks?ids=${trackId}`, {
+    const cleanId = trackId.replace('spotify:track:', '');
+    const encodedUri = encodeURIComponent(`spotify:track:${cleanId}`);
+    const res = await spotifyFetch(`https://api.spotify.com/v1/me/library?uris=${encodedUri}`, {
       method: 'DELETE',
     });
     if (!res.ok) {
@@ -81,7 +114,9 @@ export async function removeSavedTrack(trackId: string): Promise<boolean> {
 
 export async function checkSavedTrack(trackId: string): Promise<boolean> {
   try {
-    const res = await spotifyFetch(`https://api.spotify.com/v1/me/tracks/contains?ids=${trackId}`);
+    const cleanId = trackId.replace('spotify:track:', '');
+    const encodedUri = encodeURIComponent(`spotify:track:${cleanId}`);
+    const res = await spotifyFetch(`https://api.spotify.com/v1/me/library/contains?uris=${encodedUri}`);
     if (!res.ok) return false;
     const data = await res.json();
     return data[0] === true;
@@ -139,7 +174,7 @@ export async function addTrackToPlaylist(playlistId: string, trackId: string): P
   try {
     // Standard body-based addition first
     const cleanTrackId = trackId.replace('spotify:track:', '');
-    const res = await spotifyFetch(`https://api.spotify.com/v1/playlists/${playlistId}/tracks`, {
+    const res = await spotifyFetch(`https://api.spotify.com/v1/playlists/${playlistId}/items`, {
       method: 'POST',
       body: JSON.stringify({ uris: [`spotify:track:${cleanTrackId}`] }),
     });
@@ -150,8 +185,9 @@ export async function addTrackToPlaylist(playlistId: string, trackId: string): P
 
       // Fallback: Query parameter based addition (standard fallback for some Spotify endpoints)
       console.log('Attempting query-parameter fallback for playlist addition...');
+      const encodedUri = encodeURIComponent(`spotify:track:${cleanTrackId}`);
       const fallbackRes = await spotifyFetch(
-        `https://api.spotify.com/v1/playlists/${playlistId}/tracks?uris=spotify:track:${cleanTrackId}`,
+        `https://api.spotify.com/v1/playlists/${playlistId}/items?uris=${encodedUri}`,
         {
           method: 'POST',
         }

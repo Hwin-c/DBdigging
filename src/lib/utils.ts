@@ -31,3 +31,17 @@ export function parseArtists(raw: string): string {
   const fallback = raw.replace(/[\[\]']/g, '').trim();
   return fallback || raw;
 }
+
+/**
+ * Validates whether the given URL is a robust, actual image link.
+ * Excludes placeholders, "N/A" markers, empty configurations, or invalid schemes.
+ */
+export function isValidUrl(url?: string): boolean {
+  if (!url || typeof url !== 'string') return false;
+  const lower = url.toLowerCase();
+  return url.startsWith('http') && 
+         !lower.includes('placeholder') && 
+         !lower.includes('n/a') && 
+         url.length > 10;
+}
+

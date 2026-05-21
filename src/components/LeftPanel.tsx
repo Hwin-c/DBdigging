@@ -1,7 +1,7 @@
 import React from 'react';
 import { TrackSnapshot, AudioFeatures } from '../types';
 import { SpotifyPlayer } from './SpotifyPlayer';
-import { parseArtists } from '../lib/utils';
+import { parseArtists, isValidUrl } from '../lib/utils';
 import { GlassPanel } from './GlassPanel';
 
 interface LeftPanelItem {
@@ -197,12 +197,22 @@ export const LeftPanel: React.FC<LeftPanelProps> = ({
                   className="w-full flex items-center justify-between p-3 rounded-xl bg-white/[0.02] hover:bg-white/[0.06] border border-white/5 hover:border-white/10 transition-all text-left cursor-pointer group shrink-0"
                 >
                   <div className="flex items-center gap-3 min-w-0 flex-1">
-                    {/* 순서 넘버 또는 수록곡 표지 */}
-                    {item.albumCover ? (
-                      <div className="w-8 h-8 rounded bg-white/5 overflow-hidden shrink-0 border border-white/10">
-                        <img src={item.albumCover} alt={item.name} className="w-full h-full object-cover" />
-                      </div>
+                    {/* 순서 넘버 또는 수록곡 표지 분기 */}
+                    {item.type === 'song' ? (
+                      // 노래(곡)의 경우: 항상 둥근 모서리의 정사각형 안에 앨범 이미지 또는 음표 플레이스홀더를 노출
+                      isValidUrl(item.albumCover) ? (
+                        <div className="w-8 h-8 rounded-lg bg-white/5 overflow-hidden shrink-0 border border-white/10 shadow-[0_2px_8px_rgba(0,0,0,0.4)]">
+                          <img src={item.albumCover} alt={item.name} className="w-full h-full object-cover" />
+                        </div>
+                      ) : (
+                        <div className="w-8 h-8 rounded-lg bg-white/[0.04] flex items-center justify-center shrink-0 border border-white/10 animate-pulse text-[#00FFFF]/40">
+                          <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="animate-bounce">
+                            <path d="M9 18V5l12-2v13" /><circle cx="6" cy="18" r="3" /><circle cx="18" cy="16" r="3" />
+                          </svg>
+                        </div>
+                      )
                     ) : (
+                      // 장르의 경우: 앨범 이미지와 상관없이 항상 동그라미 숫자 표기
                       <div className="w-6 h-6 rounded-full bg-white/5 flex items-center justify-center shrink-0 text-[10px] font-mono text-white/30 border border-white/5 group-hover:border-[#00FFFF]/20 group-hover:text-[#00FFFF]/80 transition-colors">
                         {String(idx + 1).padStart(2, '0')}
                       </div>
@@ -244,7 +254,7 @@ export const LeftPanel: React.FC<LeftPanelProps> = ({
             
             {/* 앨범 자켓 */}
             <div className="w-full aspect-square rounded-xl bg-[#222] mb-3 overflow-hidden border border-white/5 relative group">
-              {trackInfo?.album_cover ? (
+              {isValidUrl(trackInfo?.album_cover) ? (
                 <img src={trackInfo.album_cover} alt={title} className="w-full h-full object-cover transition-transform duration-500 group-hover:scale-105" />
               ) : (
                 <div className="w-full h-full flex items-center justify-center bg-white/5 animate-pulse">
@@ -316,13 +326,15 @@ export const LeftPanel: React.FC<LeftPanelProps> = ({
                     className="w-full flex items-center justify-between p-2 rounded-lg bg-white/[0.01] hover:bg-white/[0.04] border border-white/5 transition-all text-left cursor-pointer group"
                   >
                     <div className="flex items-center gap-2.5 min-w-0 flex-1">
-                      {item.albumCover ? (
-                        <div className="w-7 h-7 rounded bg-white/5 overflow-hidden shrink-0 border border-white/10">
+                      {isValidUrl(item.albumCover) ? (
+                        <div className="w-7 h-7 rounded-lg bg-white/5 overflow-hidden shrink-0 border border-white/10 shadow-[0_2px_8px_rgba(0,0,0,0.3)]">
                           <img src={item.albumCover} alt={item.name} className="w-full h-full object-cover" />
                         </div>
                       ) : (
-                        <div className="w-5 h-5 rounded bg-white/5 flex items-center justify-center shrink-0 text-[9px] text-white/30 border border-white/5 font-mono">
-                          {idx + 1}
+                        <div className="w-7 h-7 rounded-lg bg-white/[0.04] flex items-center justify-center shrink-0 border border-white/10 animate-pulse text-[#00FFFF]/40">
+                          <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="animate-bounce">
+                            <path d="M9 18V5l12-2v13" /><circle cx="6" cy="18" r="3" /><circle cx="18" cy="16" r="3" />
+                          </svg>
                         </div>
                       )}
                       

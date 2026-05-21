@@ -15,7 +15,7 @@ import { SearchDropdown } from './components/SearchDropdown';
 import { PlaylistModal } from './components/PlaylistModal';
 import { loginWithSpotify, handleSpotifyCallback, isLoggedIn, logout, getSpotifyProfile } from './lib/spotifyAuth';
 import { fetchTrackFromSpotify, saveTrack, removeSavedTrack, checkSavedTrack } from './lib/spotify';
-import { parseArtists } from './lib/utils';
+import { parseArtists, isValidUrl } from './lib/utils';
 import { GlassPanel } from './components/GlassPanel';
 import spaceshipTexture from './assets/spaceship_texture.webp';
 import spaceNebulaBg from './assets/space_nebula_bg.webp';
@@ -52,6 +52,9 @@ function MainApp() {
   const [cachedGenres, setCachedGenres] = useState<Map<string, ParentGenre>>(new Map());
   const [isLoading, setIsLoading] = useState(true);
   const [refreshKey, setRefreshKey] = useState(0);
+
+  // Prevent duplicate Spotify API calls for the same track ID concurrently
+  const pendingFetches = useRef<Set<string>>(new Set());
 
   const [isLoadingSubGenres, setIsLoadingSubGenres] = useState(false);
 
@@ -145,10 +148,29 @@ function MainApp() {
   const [deepTracks, setDeepTracks] = useState<TrackSnapshot[]>([]);
   const [isDeepDiving, setIsDeepDiving] = useState(false);
 
+  // Premium Toast Notification State
+  const [toastMessage, setToastMessage] = useState<string | null>(null);
+  const [toastType, setToastType] = useState<'success' | 'info' | 'error'>('info');
+
+  const showToast = useCallback((msg: string, type: 'success' | 'info' | 'error' = 'success') => {
+    setToastMessage(msg);
+    setToastType(type);
+  }, []);
+
+  useEffect(() => {
+    if (toastMessage) {
+      const timer = setTimeout(() => {
+        setToastMessage(null);
+      }, 3000);
+      return () => clearTimeout(timer);
+    }
+  }, [toastMessage]);
+
   // Spotify Auth State
   const [spotifyLoggedIn, setSpotifyLoggedIn] = useState(isLoggedIn());
   const [spotifyProfile, setSpotifyProfile] = useState<{ display_name: string; images: { url: string }[] } | null>(null);
   const [isTrackLiked, setIsTrackLiked] = useState(false);
+  const [isLikeUpdating, setIsLikeUpdating] = useState(false);
   const [showPlaylistModal, setShowPlaylistModal] = useState(false);
   const [playlistTargetTrack, setPlaylistTargetTrack] = useState<{ id: string; name: string } | null>(null);
 
@@ -159,13 +181,16 @@ function MainApp() {
       handleSpotifyCallback().then(token => {
         if (token) {
           setSpotifyLoggedIn(true);
-          getSpotifyProfile().then(p => setSpotifyProfile(p));
+          getSpotifyProfile().then(p => {
+            setSpotifyProfile(p);
+            showToast(`${p?.display_name || '사용자'}님, Spotify 계정이 성공적으로 연동되었습니다!`, 'success');
+          });
         }
       });
     } else if (isLoggedIn()) {
       getSpotifyProfile().then(p => setSpotifyProfile(p));
     }
-  }, []);
+  }, [showToast]);
 
   // Check if current track is liked when viewing a song
   useEffect(() => {
@@ -182,6 +207,7 @@ function MainApp() {
         logout();
         setSpotifyLoggedIn(false);
         setSpotifyProfile(null);
+        showToast('Spotify 연동이 해제되었습니다.', 'info');
       }
     } else {
       loginWithSpotify();
@@ -189,14 +215,34 @@ function MainApp() {
   };
 
   const handleLikeTrack = async () => {
-    if (!currentNode?.trackSnapshot) return;
+    if (!currentNode?.trackSnapshot || isLikeUpdating) return;
+    setIsLikeUpdating(true);
     const trackId = currentNode.trackSnapshot.track_id;
-    if (isTrackLiked) {
-      const success = await removeSavedTrack(trackId);
-      if (success) setIsTrackLiked(false);
-    } else {
-      const success = await saveTrack(trackId);
-      if (success) setIsTrackLiked(true);
+    const trackName = currentNode.trackSnapshot.name;
+    
+    try {
+      if (isTrackLiked) {
+        const success = await removeSavedTrack(trackId);
+        if (success) {
+          setIsTrackLiked(false);
+          showToast(`"${trackName}"을(를) 좋아요 목록에서 제거했습니다.`, 'info');
+        } else {
+          showToast('좋아요 취소에 실패했습니다. 세션을 확인해 주세요.', 'error');
+        }
+      } else {
+        const success = await saveTrack(trackId);
+        if (success) {
+          setIsTrackLiked(true);
+          showToast(`"${trackName}"을(를) 좋아요 목록에 추가했습니다!`, 'success');
+        } else {
+          showToast('좋아요 추가에 실패했습니다. 권한을 확인해 주세요.', 'error');
+        }
+      }
+    } catch (error) {
+      console.error(error);
+      showToast('Spotify API 연동에 실패했습니다.', 'error');
+    } finally {
+      setIsLikeUpdating(false);
     }
   };
 
@@ -321,8 +367,9 @@ function MainApp() {
       if (fullGenre && fullGenre.top_tracks) {
         const targetGenreId = node.id;
         fullGenre.top_tracks.forEach((track, index) => {
-          const hasCover = track.album_cover || (track as any).album_art;
-          if (!hasCover) {
+          const hasCover = isValidUrl(track.album_cover) || isValidUrl((track as any).album_art);
+          if (!hasCover && !pendingFetches.current.has(track.track_id)) {
+            pendingFetches.current.add(track.track_id);
             fetchTrackFromSpotify(track.track_id).then(info => {
               if (info?.album_art) {
                 setCachedGenres(prev => {
@@ -339,6 +386,8 @@ function MainApp() {
                   return next;
                 });
               }
+            }).finally(() => {
+              pendingFetches.current.delete(track.track_id);
             });
           }
         });
@@ -363,7 +412,8 @@ function MainApp() {
 
       // Async visual cover restoration loop for sub_genre tracks
       mapped.forEach((track, index) => {
-        if (!track.album_cover) {
+        if (!isValidUrl(track.album_cover) && !pendingFetches.current.has(track.track_id)) {
+          pendingFetches.current.add(track.track_id);
           fetchTrackFromSpotify(track.track_id).then(info => {
             if (info?.album_art) {
               setCurrentNode(prev => {
@@ -375,6 +425,8 @@ function MainApp() {
                 return { ...prev, topTracks: updatedTracks };
               });
             }
+          }).finally(() => {
+            pendingFetches.current.delete(track.track_id);
           });
         }
       });
@@ -435,7 +487,8 @@ function MainApp() {
             
             // Async cover restoration loop for similar tracks
             filtered.forEach((track, index) => {
-              if (!track.album_cover) {
+              if (!isValidUrl(track.album_cover) && !pendingFetches.current.has(track.track_id)) {
+                pendingFetches.current.add(track.track_id);
                 fetchTrackFromSpotify(track.track_id).then(info => {
                   if (info?.album_art) {
                     setCurrentNode(prev => {
@@ -447,6 +500,8 @@ function MainApp() {
                       return { ...prev, similarTracks: updatedSimilar };
                     });
                   }
+                }).finally(() => {
+                  pendingFetches.current.delete(track.track_id);
                 });
               }
             });
@@ -458,18 +513,24 @@ function MainApp() {
     }
 
     // Fetch album art from Spotify for song nodes (self)
-    if (node.type === 'song' && node.trackSnapshot && !node.trackSnapshot.album_cover) {
-      fetchTrackFromSpotify(node.trackSnapshot.track_id).then(info => {
-        if (info?.album_art) {
-          setCurrentNode(prev => {
-            if (!prev || prev.id !== node.id) return prev;
-            return {
-              ...prev,
-              trackSnapshot: { ...prev.trackSnapshot!, album_cover: info.album_art },
-            };
-          });
-        }
-      });
+    if (node.type === 'song' && node.trackSnapshot && !isValidUrl(node.trackSnapshot.album_cover)) {
+      const trackId = node.trackSnapshot.track_id;
+      if (!pendingFetches.current.has(trackId)) {
+        pendingFetches.current.add(trackId);
+        fetchTrackFromSpotify(trackId).then(info => {
+          if (info?.album_art) {
+            setCurrentNode(prev => {
+              if (!prev || prev.id !== node.id) return prev;
+              return {
+                ...prev,
+                trackSnapshot: { ...prev.trackSnapshot!, album_cover: info.album_art },
+              };
+            });
+          }
+        }).finally(() => {
+          pendingFetches.current.delete(trackId);
+        });
+      }
     }
 
     setCurrentNode(node);
@@ -500,7 +561,8 @@ function MainApp() {
 
     // Async restoration loop for deep tracks
     mappedTracks.forEach((track) => {
-      if (!track.album_cover) {
+      if (!isValidUrl(track.album_cover) && !pendingFetches.current.has(track.track_id)) {
+        pendingFetches.current.add(track.track_id);
         fetchTrackFromSpotify(track.track_id).then(info => {
           if (info?.album_art) {
             setDeepTracks(prev => {
@@ -512,6 +574,8 @@ function MainApp() {
               return updated;
             });
           }
+        }).finally(() => {
+          pendingFetches.current.delete(track.track_id);
         });
       }
     });
@@ -1165,9 +1229,45 @@ function MainApp() {
           trackId={playlistTargetTrack.id}
           trackName={playlistTargetTrack.name}
           spotifyLoggedIn={spotifyLoggedIn}
+          showToast={showToast}
           onClose={() => { setShowPlaylistModal(false); setPlaylistTargetTrack(null); }}
         />
       )}
+
+      {/* Premium Toast Notification Popups */}
+      <AnimatePresence>
+        {toastMessage && (
+          <motion.div
+            initial={{ opacity: 0, y: -50, scale: 0.95 }}
+            animate={{ opacity: 1, y: 0, scale: 1 }}
+            exit={{ opacity: 0, y: -20, scale: 0.95 }}
+            className={`fixed top-6 left-1/2 -translate-x-1/2 z-50 px-6 py-3.5 rounded-full border backdrop-blur-md shadow-[0_4px_30px_rgba(0,0,0,0.5)] flex items-center gap-3 transition-all duration-300 ${
+              toastType === 'success'
+                ? 'bg-emerald-950/80 border-emerald-500/30 text-emerald-300 shadow-[0_0_15px_rgba(16,185,129,0.2)]'
+                : toastType === 'error'
+                ? 'bg-rose-950/80 border-rose-500/30 text-rose-300 shadow-[0_0_15px_rgba(244,63,94,0.2)]'
+                : 'bg-indigo-950/80 border-indigo-500/30 text-indigo-300 shadow-[0_0_15px_rgba(99,102,241,0.2)]'
+            }`}
+          >
+            {toastType === 'success' && (
+              <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" className="shrink-0 animate-bounce text-emerald-400">
+                <polyline points="20 6 9 17 4 12"></polyline>
+              </svg>
+            )}
+            {toastType === 'error' && (
+              <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" className="shrink-0 animate-pulse text-rose-400">
+                <circle cx="12" cy="12" r="10"></circle><line x1="12" y1="8" x2="12" y2="12"></line><line x1="12" y1="16" x2="12.01" y2="16"></line>
+              </svg>
+            )}
+            {toastType === 'info' && (
+              <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" className="shrink-0 animate-pulse text-indigo-400">
+                <circle cx="12" cy="12" r="10"></circle><line x1="12" y1="16" x2="12" y2="12"></line><line x1="12" y1="8" x2="12.01" y2="8"></line>
+              </svg>
+            )}
+            <span className="text-xs font-medium tracking-wide">{toastMessage}</span>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
   );
 }

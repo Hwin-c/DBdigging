@@ -6,9 +6,10 @@ interface PlaylistModalProps {
   trackName: string;
   spotifyLoggedIn: boolean;
   onClose: () => void;
+  showToast?: (msg: string, type?: 'success' | 'info' | 'error') => void;
 }
 
-export const PlaylistModal: React.FC<PlaylistModalProps> = ({ trackId, trackName, spotifyLoggedIn, onClose }) => {
+export const PlaylistModal: React.FC<PlaylistModalProps> = ({ trackId, trackName, spotifyLoggedIn, onClose, showToast }) => {
   const [playlists, setPlaylists] = useState<SpotifyPlaylist[]>([]);
   const [loading, setLoading] = useState(true);
   const [addingTo, setAddingTo] = useState<string | null>(null);
@@ -64,6 +65,7 @@ export const PlaylistModal: React.FC<PlaylistModalProps> = ({ trackId, trackName
       
       setAddingTo(null);
       setSuccessId(playlist.id);
+      showToast?.(`"${trackName}"을(를) "${playlist.name}"에 추가했습니다. (Simulated)`, 'success');
       setTimeout(() => onClose(), 1200);
       return;
     }
@@ -72,8 +74,10 @@ export const PlaylistModal: React.FC<PlaylistModalProps> = ({ trackId, trackName
     setAddingTo(null);
     if (success) {
       setSuccessId(playlist.id);
+      showToast?.(`"${trackName}"을(를) "${playlist.name}"에 성공적으로 추가했습니다!`, 'success');
       setTimeout(() => onClose(), 1200);
     } else {
+      showToast?.('플레이리스트 추가에 실패했습니다.', 'error');
       alert(
         '스포티파이 플레이리스트에 곡을 추가하지 못했습니다. (Spotify API 403 오류 등)\n\n원인 및 해결 방법:\n' +
         '1. [권한 갱신 필요] 이전에 로그인한 세션에 권한(Scope)이 누락되었을 수 있습니다. 상단 우측 스포티파이 연결 완료 버튼을 눌러 로그아웃한 후, 다시 로그인해 주세요.\n' +
