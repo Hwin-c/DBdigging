@@ -19,6 +19,7 @@ import { parseArtists, isValidUrl } from './lib/utils';
 import { GlassPanel } from './components/GlassPanel';
 import spaceshipTexture from './assets/spaceship_texture.webp';
 import spaceNebulaBg from './assets/space_nebula_bg.webp';
+import { LandscapeGuide } from './components/LandscapeGuide';
 
 
 // SVG Icons
@@ -85,46 +86,7 @@ function MainApp() {
     return undefined;
   }, [cachedGenres, allGenresMeta]);
 
-  // 헬퍼 함수: parentName을 기반으로 NodeData에 들어갈 정보를 온전히 찾아와 복원
-  const handleRestoreParentNode = useCallback((parentName?: string) => {
-    if (!parentName) {
-      setCurrentNode(null);
-      return;
-    }
-    
-    const parentNameLower = parentName.toLowerCase();
-    
-    // 1. 세부 장르 중 일치하는 것이 있는지 탐색
-    for (const [_, parentGenre] of cachedGenres.entries()) {
-      if (parentGenre.sub_genres_data) {
-        const sub = parentGenre.sub_genres_data.find(sg => sg.name.toLowerCase() === parentNameLower);
-        if (sub) {
-          setCurrentNode({
-            id: sub.id,
-            type: 'sub_genre',
-            name: sub.name,
-            parentGenre: parentGenre.name,
-            audioFeatures: sub.average_audio_features
-          });
-          return;
-        }
-      }
-    }
-    
-    // 2. 대장르 중 일치하는 것이 있는지 탐색
-    const big = allGenresMeta.find(g => g.name.toLowerCase() === parentNameLower);
-    if (big) {
-      setCurrentNode({
-        id: big.id,
-        type: 'big_genre',
-        name: big.name,
-        audioFeatures: big.average_audio_features
-      });
-      return;
-    }
-    
-    setCurrentNode(null);
-  }, [cachedGenres, allGenresMeta]);
+
 
   // 헬퍼 함수: parentName이 세부 장르인지 대분류 장르인지 판단
   const isSubGenre = useCallback((genreName?: string): boolean => {
@@ -355,6 +317,38 @@ function MainApp() {
   }, [mode, clearLog]);
 
   const handleNodeClick = async (node: NodeData) => {
+    // 방어 코드: 노드 ID가 가짜 ID이거나 누락된 경우, 이름 매칭을 통해 실제 ID로 보완 복원
+    if (node.type === 'big_genre' && (node.id === 'parent_genre_node' || !node.id) && node.name) {
+      const actualMeta = allGenresMeta.find(g => g.name.toLowerCase() === node.name.toLowerCase());
+      if (actualMeta) {
+        node = {
+          ...node,
+          id: actualMeta.id,
+          audioFeatures: node.audioFeatures || actualMeta.average_audio_features
+        };
+      }
+    } else if (node.type === 'sub_genre' && (node.id === 'sg1' || !node.id) && node.name) {
+      let foundSubId = '';
+      let parentGenreName = node.parentGenre || '';
+      for (const [_, parentGenre] of cachedGenres.entries()) {
+        if (parentGenre.sub_genres_data) {
+          const sub = parentGenre.sub_genres_data.find(s => s.name.toLowerCase() === node.name.toLowerCase());
+          if (sub) {
+            foundSubId = sub.id;
+            parentGenreName = parentGenreName || parentGenre.name;
+            break;
+          }
+        }
+      }
+      if (foundSubId) {
+        node = {
+          ...node,
+          id: foundSubId,
+          parentGenre: parentGenreName
+        };
+      }
+    }
+
     addToLog(node.id, node.name, node.type);
     if (mode === 'home') return;
 
@@ -567,6 +561,47 @@ function MainApp() {
     setCurrentNode(node);
   };
 
+  // 헬퍼 함수: parentName을 기반으로 NodeData에 들어갈 정보를 온전히 찾아와 복원
+  const handleRestoreParentNode = useCallback((parentName?: string) => {
+    if (!parentName) {
+      setCurrentNode(null);
+      return;
+    }
+    
+    const parentNameLower = parentName.toLowerCase();
+    
+    // 1. 세부 장르 중 일치하는 것이 있는지 탐색
+    for (const [_, parentGenre] of cachedGenres.entries()) {
+      if (parentGenre.sub_genres_data) {
+        const sub = parentGenre.sub_genres_data.find(sg => sg.name.toLowerCase() === parentNameLower);
+        if (sub) {
+          handleNodeClick({
+            id: sub.id,
+            type: 'sub_genre',
+            name: sub.name,
+            parentGenre: parentGenre.name,
+            audioFeatures: sub.average_audio_features
+          });
+          return;
+        }
+      }
+    }
+    
+    // 2. 대장르 중 일치하는 것이 있는지 탐색
+    const big = allGenresMeta.find(g => g.name.toLowerCase() === parentNameLower);
+    if (big) {
+      handleNodeClick({
+        id: big.id,
+        type: 'big_genre',
+        name: big.name,
+        audioFeatures: big.average_audio_features
+      });
+      return;
+    }
+    
+    setCurrentNode(null);
+  }, [cachedGenres, allGenresMeta, handleNodeClick]);
+
   const startExploreMode = (tab: 'genre' | 'song') => {
     setIsTransitioning(true);
     
@@ -692,8 +727,13 @@ function MainApp() {
           ] as NodeData[];
         } else {
           // Sub-genre: Show parent genre + 5 top tracks
+          const parentGenreMeta = allGenresMeta.find(
+            g => g.name.toLowerCase() === (currentNode.parentGenre || '').toLowerCase()
+          );
+          const parentNodeId = parentGenreMeta ? parentGenreMeta.id : 'parent_genre_node';
+
           const parentNode: NodeData = {
-            id: 'parent_genre_node', type: 'big_genre', name: currentNode.parentGenre || 'Parent Genre',
+            id: parentNodeId, type: 'big_genre', name: currentNode.parentGenre || 'Parent Genre',
             x: (Math.random() - 0.5) * 300, y: (Math.random() - 0.5) * 300
           };
           
@@ -1398,9 +1438,57 @@ function MainApp() {
 }
 
 export default function App() {
+  const [showOrientationGuide, setShowOrientationGuide] = useState(false);
+
+  useEffect(() => {
+    const handleCheck = () => {
+      // 1. 기기 타입 판별 (데스크탑 PC 환경 방어)
+      const ua = navigator.userAgent || navigator.vendor || (window as any).opera;
+      const isMobileUA = /android|webos|iphone|ipad|ipod|blackberry|iemobile|opera mini/i.test(ua.toLowerCase());
+      const hasTouch = ('ontouchstart' in window) || (navigator.maxTouchPoints > 0);
+      
+      // 데스크탑 PC인 경우(터치가 없고 모바일 UA가 아님) 절대 회전 가이드를 띄우지 않음
+      const isMobileDevice = isMobileUA || hasTouch;
+      if (!isMobileDevice) {
+        setShowOrientationGuide(false);
+        return;
+      }
+      
+      // 2. 모바일/태블릿 화면 크기(가로 1024px 이하) 및 세로 모드(Portrait) 여부 감지
+      const isPortrait = window.innerHeight > window.innerWidth;
+      const isSmallScreen = window.innerWidth <= 1024;
+
+      setShowOrientationGuide(isPortrait && isSmallScreen);
+    };
+
+    handleCheck();
+    window.addEventListener('resize', handleCheck);
+    window.addEventListener('orientationchange', handleCheck);
+    return () => {
+      window.removeEventListener('resize', handleCheck);
+      window.removeEventListener('orientationchange', handleCheck);
+    };
+  }, []);
+
   return (
-    <DiggingProvider>
-      <MainApp />
-    </DiggingProvider>
+    <>
+      <AnimatePresence mode="wait">
+        {showOrientationGuide && (
+          <motion.div
+            key="landscape-guide"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            transition={{ duration: 0.3 }}
+            className="fixed inset-0 z-[9999]"
+          >
+            <LandscapeGuide />
+          </motion.div>
+        )}
+      </AnimatePresence>
+      <DiggingProvider>
+        <MainApp />
+      </DiggingProvider>
+    </>
   );
 }

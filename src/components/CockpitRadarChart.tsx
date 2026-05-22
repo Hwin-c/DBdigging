@@ -6,6 +6,9 @@ interface CockpitRadarChartProps {
   height: number;
   features: AudioFeatures;
   compareFeatures?: AudioFeatures;
+  onLabelHover?: (key: string, e: React.MouseEvent<SVGTextElement>) => void;
+  onLabelLeave?: () => void;
+  onLabelClick?: (key: string, e: React.MouseEvent<SVGTextElement> | React.TouchEvent<SVGTextElement>) => void;
 }
 
 export const CockpitRadarChart: React.FC<CockpitRadarChartProps> = ({
@@ -13,6 +16,9 @@ export const CockpitRadarChart: React.FC<CockpitRadarChartProps> = ({
   height,
   features,
   compareFeatures,
+  onLabelHover,
+  onLabelLeave,
+  onLabelClick,
 }) => {
   const cx = width / 2;
   const cy = height / 2;
@@ -103,7 +109,11 @@ export const CockpitRadarChart: React.FC<CockpitRadarChartProps> = ({
           y={y}
           textAnchor={textAnchor}
           dy={dy}
-          className="fill-white/60 text-[10px] font-mono select-none"
+          className="fill-white/60 hover:fill-[#00FFFF] text-[10px] font-mono select-none cursor-help transition-all duration-300"
+          onMouseEnter={(e) => onLabelHover?.(v.key, e)}
+          onMouseLeave={onLabelLeave}
+          onClick={(e) => onLabelClick?.(v.key, e)}
+          onTouchStart={(e) => onLabelClick?.(v.key, e as any)}
         >
           {v.label}
         </text>
