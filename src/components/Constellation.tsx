@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState, useCallback, useMemo } from 'react'
 import { NodeData } from '../types';
 import ForceGraph2D from 'react-force-graph-2d';
 import { forceCollide, forceManyBody, forceCenter, forceX, forceY } from 'd3-force';
+import { useDigging } from '../DiggingContext';
 
 interface ConstellationProps {
   nodes: NodeData[];
@@ -41,7 +42,7 @@ export const Constellation: React.FC<ConstellationProps> = ({ nodes, centerNode,
   const fgRef = useRef<any>();
   const containerRef = useRef<HTMLDivElement>(null);
   const [dimensions, setDimensions] = useState({ width: 800, height: 600 });
-  const [hoverNode, setHoverNode] = useState<string | null>(null);
+  const { hoveredNodeId, setHoveredNodeId } = useDigging();
   const settledReportedRef = useRef<boolean>(false);
 
   // Reset reported flag when node structure changes (not simple reference changes)
@@ -193,12 +194,12 @@ export const Constellation: React.FC<ConstellationProps> = ({ nodes, centerNode,
           fy = activeY;
           shouldPin = true;
         } else if (n.type === 'song' && n.id !== hubId) {
-          // 수록곡들은 허브 노드를 중심으로 우측 부채꼴 모양으로 완전 고정 (거리를 360px -> 160px로 대폭 좁힘)
+          // 수록곡들은 허브 노드를 중심으로 우측 부채꼴 모양으로 완전 고정 (거리 확장)
           const children = nodes.filter(node => node.type === 'song' && node.id !== hubId);
           const index = children.findIndex(node => node.id === n.id);
           if (index !== -1) {
             const angle = -Math.PI * 0.17 + (index / Math.max(1, children.length - 1)) * (Math.PI * 0.34);
-            const distance = 160;
+            const distance = 260;
             fx = activeX + Math.cos(angle) * distance;
             fy = activeY + Math.sin(angle) * distance;
             shouldPin = true;
@@ -222,12 +223,12 @@ export const Constellation: React.FC<ConstellationProps> = ({ nodes, centerNode,
           fy = activeY;
           shouldPin = true;
         } else if (n.type === 'song') {
-          // 현재 곡 및 모든 수록곡 노드는 하위 장르 허브를 중심으로 우측 부채꼴 정렬 (물리 거리를 430px -> 200px로 대폭 좁힘)
+          // 현재 곡 및 모든 수록곡 노드는 하위 장르 허브를 중심으로 우측 부채꼴 정렬 (거리 확장)
           const children = nodes.filter(node => node.type === 'song');
           const index = children.findIndex(node => node.id === n.id);
           if (index !== -1) {
             const angle = -Math.PI * 0.17 + (index / Math.max(1, children.length - 1)) * (Math.PI * 0.34);
-            const distance = 200;
+            const distance = 300;
             fx = activeX + Math.cos(angle) * distance;
             fy = activeY + Math.sin(angle) * distance;
             shouldPin = true;
@@ -344,14 +345,14 @@ export const Constellation: React.FC<ConstellationProps> = ({ nodes, centerNode,
     if (!fgRef.current) return;
     const fg = fgRef.current;
 
-    // 대장르/세부장르 고정핀을 유지하면서 수록곡들이 옹기종기 미려하게 모이도록 상시 물리 엔진 셋팅
-    const chargeStrength = centerNode ? -300 : (showSubGenres ? -1000 : -350);
+    // 대장르/세부장르 고정핀을 유지하면서 수록곡들이 옹기종기 미려하게 모이도록 상시 물리 엔진 셋팅 (척력 대폭 분산 및 거리 확장)
+    const chargeStrength = centerNode ? -1000 : (showSubGenres ? -3000 : -1200);
     fg.d3Force('charge', forceManyBody().strength(chargeStrength));
     
     fg.d3Force('collide', forceCollide()
       .radius((node: any) => {
-        const baseRadius = node.name ? node.name.length * (showSubGenres ? 4.5 : 3.5) : 8;
-        const extraOffset = centerNode ? 22 : (showSubGenres ? 20 : 12);
+        const baseRadius = node.name ? node.name.length * (showSubGenres ? 6.5 : 5.5) : 15;
+        const extraOffset = centerNode ? 50 : (showSubGenres ? 45 : 30);
         return baseRadius + extraOffset;
       })
       .iterations(3)
@@ -369,15 +370,15 @@ export const Constellation: React.FC<ConstellationProps> = ({ nodes, centerNode,
     if (linkForce) {
       linkForce
         .distance((link: any) => {
-          if (link.isStructural) return showSubGenres ? 250 : 150; // Structural constellation lines between big genres
-          if (link.isOrbit) return showSubGenres ? 180 : 100;       // Orbit lines to sub-genres
+          if (link.isStructural) return showSubGenres ? 500 : 350; // Structural constellation lines between big genres
+          if (link.isOrbit) return showSubGenres ? 380 : 250;       // Orbit lines to sub-genres
           
           if (centerNode) {
-            if (centerNode.type === 'big_genre') return 130; // 대장르 상세 뷰에서 옹기종기 모이도록 축소 (280 -> 130)
-            if (centerNode.type === 'sub_genre') return 160; // 세부장르 상세 뷰 (360 -> 160)
-            if (centerNode.type === 'song') return 200;      // 곡 상세 뷰 (430 -> 200)
+            if (centerNode.type === 'big_genre') return 320; // 대장르 상세 뷰 (220 -> 320)
+            if (centerNode.type === 'sub_genre') return 380; // 세부장르 상세 뷰 (280 -> 380)
+            if (centerNode.type === 'song') return 420;      // 곡 상세 뷰 (320 -> 420)
           }
-          return 100;
+          return 250;
         })
         .strength(0.08); // Make it very gentle
     }
@@ -403,7 +404,7 @@ export const Constellation: React.FC<ConstellationProps> = ({ nodes, centerNode,
   const drawNode = useCallback((node: any, ctx: CanvasRenderingContext2D, globalScale: number) => {
     const label = node.name || '';
     const isActive = node.id === activeNodeId;
-    const isHovered = node.id === hoverNode;
+    const isHovered = node.id === hoveredNodeId;
     const isCenter = centerNode && node.id === centerNode.id;
     const isBig = node.type === 'big_genre' || isCenter || node.type === 'sub_genre';
 
@@ -414,23 +415,23 @@ export const Constellation: React.FC<ConstellationProps> = ({ nodes, centerNode,
       fadeAlpha = Math.min(elapsed / 1500, 1); // 1.5s fade-in
     }
 
-    // Radius logic based on type and importance to establish visual hierarchy
-    let baseOuterRadius = 3.5;
-    let baseInnerRadius = 1.4;
+    // Radius logic based on type and importance to establish visual hierarchy (별 크기 추가 대폭 증가)
+    let baseOuterRadius = 8.5;
+    let baseInnerRadius = 3.4;
 
     if (node.type === 'big_genre') {
-      baseOuterRadius = 8;
-      baseInnerRadius = 3.2;
+      baseOuterRadius = 19.5;
+      baseInnerRadius = 7.8;
     } else if (node.type === 'sub_genre') {
-      baseOuterRadius = 5.5;
-      baseInnerRadius = 2.2;
+      baseOuterRadius = 13.5;
+      baseInnerRadius = 5.4;
     } else if (node.type === 'song') {
       if (isCenter) {
-        baseOuterRadius = 5;
-        baseInnerRadius = 2;
+        baseOuterRadius = 12.0;
+        baseInnerRadius = 4.8;
       } else {
-        baseOuterRadius = 3.5;
-        baseInnerRadius = 1.4;
+        baseOuterRadius = 8.5;
+        baseInnerRadius = 3.4;
       }
     }
 
@@ -476,8 +477,8 @@ export const Constellation: React.FC<ConstellationProps> = ({ nodes, centerNode,
     ctx.fillStyle = isActive ? '#FFFFFF' : coreColor;
     ctx.fill();
 
-    // Draw text label with background box for readability
-    const baseFontSize = isCenter ? 15 : (node.type === 'big_genre' ? 12 : (node.type === 'sub_genre' ? 10 : 9)); 
+    // Draw text label with background box for readability (폰트 크기 추가 증가)
+    const baseFontSize = isCenter ? 24 : (node.type === 'big_genre' ? 20 : (node.type === 'sub_genre' ? 17 : 14)); 
     const minReadableScreenSize = 4; // minimum pixels on screen to draw text
     
     // Label Visibility Control
@@ -488,7 +489,7 @@ export const Constellation: React.FC<ConstellationProps> = ({ nodes, centerNode,
       ctx.textAlign = 'center';
       ctx.textBaseline = 'top';
 
-      const textY = node.y + outerRadius + 8;
+      const textY = node.y + outerRadius + 10;
       const textWidth = ctx.measureText(label).width;
       const padX = 6;
       const padY = 4;
@@ -534,7 +535,7 @@ export const Constellation: React.FC<ConstellationProps> = ({ nodes, centerNode,
     }
 
     ctx.restore();
-  }, [activeNodeId, centerNode, hoverNode]);
+  }, [activeNodeId, centerNode, hoveredNodeId]);
 
   // Link color with fade-in sync
   const getLinkColor = useCallback((link: any) => {
@@ -546,11 +547,11 @@ export const Constellation: React.FC<ConstellationProps> = ({ nodes, centerNode,
 
     if (link.isStructural) return `rgba(14, 165, 233, ${0.2 * baseAlpha})`;
 
-    const isHighlight = hoverNode && (link.source.id === hoverNode || link.target.id === hoverNode);
+    const isHighlight = hoveredNodeId && (link.source.id === hoveredNodeId || link.target.id === hoveredNodeId);
     return isHighlight
       ? `rgba(0, 255, 255, ${0.7 * baseAlpha})`
       : `rgba(255, 255, 255, ${0.12 * baseAlpha})`;
-  }, [hoverNode]);
+  }, [hoveredNodeId]);
 
   return (
     <div ref={containerRef} className="absolute inset-0 w-full h-full z-10 cursor-move">
@@ -564,25 +565,25 @@ export const Constellation: React.FC<ConstellationProps> = ({ nodes, centerNode,
         linkColor={getLinkColor}
         linkWidth={(link: any) => {
           if (link.isStructural) return 0.75;
-          return hoverNode && (link.source.id === hoverNode || link.target.id === hoverNode) ? 1.5 : 0.5;
+          return hoveredNodeId && (link.source.id === hoveredNodeId || link.target.id === hoveredNodeId) ? 1.5 : 0.5;
         }}
         onNodeClick={(node) => onNodeClick(node as NodeData)}
-        onNodeHover={(node) => setHoverNode(node ? (node as NodeData).id : null)}
-        enableNodeDrag={true}
+        onNodeHover={(node) => setHoveredNodeId(node ? (node as NodeData).id : null)}
+        enableNodeDrag={false}
         enableZoomInteraction={true}
         enablePanInteraction={true}
         minZoom={0.2}
         maxZoom={3.5}
         d3VelocityDecay={0.4} // Smooth drifting
-        warmupTicks={0}
-        cooldownTicks={0}
+        warmupTicks={150} // 150 Warmup Ticks로 로딩 즉시 성도 배치 사전 계산 완료
+        cooldownTicks={1} // Cooldown Ticks를 1로 제한하여 화면 렌더링 즉시 정적 레이아웃으로 고정 (Tick 정지)
         onEngineStop={() => {
           if (fgRef.current) {
             if (centerNode) {
               // 상세 화면에서는 zoomToFit을 호출하면 노드들을 뷰포트 한가운데로 구겨넣으므로,
-              // 우리가 고안한 수려한 오프셋 고정 레이아웃이 있는 그대로 왼쪽에 드러나도록 줌 레벨과 카메라 위치를 고정합니다. (옹기종기 모인 노드들에 맞춰 1.75로 대폭 확대)
+              // 우리가 고안한 수려한 오프셋 고정 레이아웃이 있는 그대로 왼쪽에 드러나도록 줌 레벨과 카메라 위치를 고정합니다. (옹기종기 모인 노드들에 맞춰 1.25로 확대 조정)
               fgRef.current.centerAt(0, 0, 400);
-              fgRef.current.zoom(1.75, 400);
+              fgRef.current.zoom(1.25, 400);
             } else {
               // 루트 은하계 탐색 화면에서는 기존처럼 전체 노드가 한눈에 들어오도록 피팅합니다.
               fgRef.current.zoomToFit(400, 50);

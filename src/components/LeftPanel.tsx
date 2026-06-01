@@ -3,6 +3,7 @@ import { TrackSnapshot, AudioFeatures } from '../types';
 import { SpotifyPlayer } from './SpotifyPlayer';
 import { parseArtists, isValidUrl } from '../lib/utils';
 import { GlassPanel } from './GlassPanel';
+import { useDigging } from '../DiggingContext';
 
 interface LeftPanelItem {
   id: string;
@@ -168,6 +169,8 @@ export const LeftPanel: React.FC<LeftPanelProps> = ({
   exploreTab, setExploreTab, showSubGenres, onToggleSubGenres, isExploreDeep, isLoadingSubGenres,
   showTabSwitcher = false, showSubGenreToggle = false
 }) => {
+  const { hoveredNodeId, setHoveredNodeId } = useDigging();
+
   return (
     <GlassPanel 
       className="w-full h-full text-white z-20 shadow-2xl flex flex-col justify-start overflow-hidden"
@@ -241,7 +244,13 @@ export const LeftPanel: React.FC<LeftPanelProps> = ({
                 <button
                   key={item.id || idx}
                   onClick={() => onItemClick?.(item.rawObject || item)}
-                  className="w-full flex items-center justify-between p-3 rounded-xl bg-white/[0.02] hover:bg-white/[0.06] border border-white/5 hover:border-white/10 transition-all text-left cursor-pointer group shrink-0"
+                  onMouseEnter={() => setHoveredNodeId(item.id)}
+                  onMouseLeave={() => setHoveredNodeId(null)}
+                  className={`w-full flex items-center justify-between p-3 rounded-xl border transition-all text-left cursor-pointer group shrink-0 ${
+                    hoveredNodeId === item.id 
+                      ? 'bg-[#00FFFF]/10 border-[#00FFFF]/40 shadow-[0_0_15px_rgba(0,255,255,0.15)] text-[#00FFFF]' 
+                      : 'bg-white/[0.02] hover:bg-white/[0.06] border-white/5 hover:border-white/10 text-white'
+                  }`}
                 >
                   <div className="flex items-center gap-3 min-w-0 flex-1">
                     {/* 순서 넘버 또는 수록곡 표지 분기 */}
@@ -362,7 +371,13 @@ export const LeftPanel: React.FC<LeftPanelProps> = ({
                   <button
                     key={item.id || idx}
                     onClick={() => onItemClick?.(item.rawObject || item)}
-                    className="w-full flex items-center justify-between p-2 rounded-lg bg-white/[0.01] hover:bg-white/[0.04] border border-white/5 transition-all text-left cursor-pointer group"
+                    onMouseEnter={() => setHoveredNodeId(item.id)}
+                    onMouseLeave={() => setHoveredNodeId(null)}
+                    className={`w-full flex items-center justify-between p-2 rounded-lg border transition-all text-left cursor-pointer group ${
+                      hoveredNodeId === item.id
+                        ? 'bg-[#00FFFF]/10 border-[#00FFFF]/40 shadow-[0_0_10px_rgba(0,255,255,0.15)] text-[#00FFFF]'
+                        : 'bg-white/[0.01] hover:bg-white/[0.04] border-white/5'
+                    }`}
                   >
                     <div className="flex items-center gap-2.5 min-w-0 flex-1">
                       {isValidUrl(item.albumCover) ? (

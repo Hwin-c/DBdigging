@@ -11,6 +11,8 @@ interface DiggingContextType {
   login: () => Promise<void>;
   logout: () => Promise<void>;
   saveLog: () => Promise<void>;
+  hoveredNodeId: string | null;
+  setHoveredNodeId: (id: string | null) => void;
 }
 
 const DiggingContext = createContext<DiggingContextType | undefined>(undefined);
@@ -18,6 +20,7 @@ const DiggingContext = createContext<DiggingContextType | undefined>(undefined);
 export const DiggingProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [log, setLog] = useState<DiggingLogEntry[]>([]);
   const [user, setUser] = useState<User | any | null>(null);
+  const [hoveredNodeId, setHoveredNodeId] = useState<string | null>(null);
 
   useEffect(() => {
     if (auth) {
@@ -94,7 +97,10 @@ export const DiggingProvider: React.FC<{ children: React.ReactNode }> = ({ child
   }, [user, log]);
 
   return (
-    <DiggingContext.Provider value={{ log, addToLog, clearLog, user, login, logout, saveLog }}>
+    <DiggingContext.Provider value={{ 
+      log, addToLog, clearLog, user, login, logout, saveLog,
+      hoveredNodeId, setHoveredNodeId
+    }}>
       {children}
     </DiggingContext.Provider>
   );

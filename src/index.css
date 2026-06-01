@@ -130,11 +130,7 @@ html, body, #root, .font-sans {
   box-shadow: inset 0 0 25px rgba(0, 0, 0, 0.15) !important;
 }
 
-/* 패널 가장자리 엠보싱 내부 섀도우 및 Futuristic Cyber Border 경계선 */
-header.relative, div.relative, footer.relative {
-  border-color: rgba(255, 255, 255, 0.06) !important;
-  box-shadow: inset 0 0 35px rgba(0, 0, 0, 0.85);
-}
+
 
 /* Center Space Window 접경부 사이버 보더 글로우 효과 */
 .border-\[\#00FFFF\]\/10 {
