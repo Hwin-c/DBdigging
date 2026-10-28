@@ -57,6 +57,9 @@ export class GraphStore {
   // 곡과 인물의 756건 숫자 ID 충돌을 원천 차단하여 유령 웜홀 이동 방지
   public adj: Map<string, string[]> = new Map();
 
+  // O(1) 엣지 역할 조회 인덱스 ("${songId}_${personId}" -> RoleCode[])
+  public songPersonRoles: Map<string, RoleCode[]> = new Map();
+
   // 번들 로딩 및 파싱 시간 기록 (ms)
   public loadDurationMs: number = 0;
   public totalEdgesCount: number = 0;
@@ -136,6 +139,7 @@ export class GraphStore {
         }
         pSongs.push([songId, roles]);
 
+        this.songPersonRoles.set(`${songId}_${personId}`, roles);
         this.addAdjEdge(`s:${songId}`, `p:${personId}`);
       }
     }

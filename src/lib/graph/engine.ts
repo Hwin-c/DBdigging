@@ -198,6 +198,30 @@ export class GraphEngine {
   }
 
   /**
+   * 엣지의 역할 코드가 allowedRolesSet에 부합하는지 O(1) 검사
+   */
+  private isEdgeAllowed(curr: string, next: string, allowedRolesSet: Set<RoleCode>): boolean {
+    // 1) s: <-> p: 전이
+    if (curr.startsWith("s:") && next.startsWith("p:")) {
+      const sId = curr.slice(2);
+      const pId = next.slice(2);
+      const roles = this.store.songPersonRoles.get(`${sId}_${pId}`);
+      return roles ? roles.some((r) => allowedRolesSet.has(r)) : false;
+    }
+    if (curr.startsWith("p:") && next.startsWith("s:")) {
+      const pId = curr.slice(2);
+      const sId = next.slice(2);
+      const roles = this.store.songPersonRoles.get(`${sId}_${pId}`);
+      return roles ? roles.some((r) => allowedRolesSet.has(r)) : false;
+    }
+    // 2) p: <-> p: (그룹 <-> 멤버 징검다리, 역할 코드 6: 그룹소속)
+    if (curr.startsWith("p:") && next.startsWith("p:")) {
+      return allowedRolesSet.has(6);
+    }
+    return true;
+  }
+
+  /**
    * unweighted BFS 최단 경로 탐색 엔진 (곡 's:' / 인물 'p:' 접두사 기반 타입 격리)
    * 756건의 숫자 ID 충돌에 의한 비정상 웜홀 경로를 원천 차단하고
    * 유저가 실제 클릭 가능한 전이(Song <-> Person <-> Group <-> Song)만 탐색
@@ -205,7 +229,8 @@ export class GraphEngine {
    */
   public findShortestPath(
     startSongId: string,
-    targetSongId: string
+    targetSongId: string,
+    options?: { allowedRoles?: RoleCode[] }
   ): ShortestPathResult {
     if (startSongId === targetSongId) {
       return {
@@ -231,6 +256,10 @@ export class GraphEngine {
 
     const startKey = `s:${startSongId}`;
     const targetKey = `s:${targetSongId}`;
+    const allowedRolesSet =
+      options?.allowedRoles && options.allowedRoles.length > 0
+        ? new Set(options.allowedRoles)
+        : null;
 
     // Queue 포인터 방식 unweighted BFS
     const queue: string[] = [startKey];
@@ -252,6 +281,12 @@ export class GraphEngine {
 
       for (let i = 0; i < neighbors.length; i++) {
         const next = neighbors[i];
+
+        // 허용 역할 제약 조건 O(1) 검사
+        if (allowedRolesSet && !this.isEdgeAllowed(curr, next, allowedRolesSet)) {
+          continue;
+        }
+
         if (!visited.has(next)) {
           visited.add(next);
           parent.set(next, curr);
@@ -306,7 +341,8 @@ export class GraphEngine {
    */
   public findClosestCandidateSong(
     candidateSongIds: Set<string>,
-    targetSongId: string
+    targetSongId: string,
+    options?: { allowedRoles?: RoleCode[] }
   ): { songId: string; turns: number; path: string[]; typedPath: string[] } | null {
     if (candidateSongIds.size === 0 || !this.store.songs.has(targetSongId)) {
       return null;
@@ -324,6 +360,11 @@ export class GraphEngine {
       };
     }
 
+    const allowedRolesSet =
+      options?.allowedRoles && options.allowedRoles.length > 0
+        ? new Set(options.allowedRoles)
+        : null;
+
     // Queue 포인터 방식 역방향 BFS (targetKey -> candidate song keys)
     const queue: string[] = [targetKey];
     let head = 0;
@@ -339,6 +380,12 @@ export class GraphEngine {
 
       for (let i = 0; i < neighbors.length; i++) {
         const next = neighbors[i];
+
+        // 허용 역할 제약 조건 O(1) 검사
+        if (allowedRolesSet && !this.isEdgeAllowed(curr, next, allowedRolesSet)) {
+          continue;
+        }
+
         if (!visited.has(next)) {
           visited.add(next);
           parent.set(next, curr);

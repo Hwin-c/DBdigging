@@ -1,7 +1,36 @@
 import { getGraphEngine } from "../graph/engine";
-import { DailyQuestSeed, QuestPayload, SongInfo } from "../graph/types";
+import { DailyQuestSeed, QuestPayload, SongInfo, PracticeFilterOptions, RawSongTuple } from "../graph/types";
 
 export type { QuestPayload };
+
+/**
+ * 곡 속성이 PracticeFilterOptions(Layer 2)에 부합하는지 판정
+ */
+function checkSongMatchesFilters(tuple: RawSongTuple, options: PracticeFilterOptions): boolean {
+  if (options.genre && options.genre !== "all") {
+    if (!tuple[4].includes(options.genre)) return false;
+  }
+
+  if (options.decade && options.decade !== "all") {
+    const year = tuple[3];
+    if (options.decade === "2020s" && year < "2020") return false;
+    if (options.decade === "2010s" && (year < "2010" || year >= "2020")) return false;
+    if (options.decade === "2000s" && (year < "2000" || year >= "2010")) return false;
+    if (options.decade === "1990s" && (year < "1990" || year >= "2000")) return false;
+    if (options.decade === "1980s_before" && year >= "1990") return false;
+  }
+
+  if (options.agency && options.agency.trim()) {
+    const q = options.agency.trim().toLowerCase();
+    if (!tuple[2].toLowerCase().includes(q)) return false;
+  }
+
+  if (options.titleOnly && tuple[6] !== 1) return false;
+
+  if (options.minLikes && options.minLikes > 0 && tuple[5] < options.minLikes) return false;
+
+  return true;
+}
 
 let cachedSeeds: DailyQuestSeed[] | null = null;
 let seedLoadPromise: Promise<DailyQuestSeed[]> | null = null;
@@ -137,21 +166,40 @@ export function findConnectedSongs(startSongId: string, maxLimit = 500): string[
  * 자유 모드 및 연습 모드를 위한 랜덤 퀘스트 생성기
  * in_giant == 0인 독립 섬 곡 출발 시에도 동일 서브그래프 내에서 안전하게 목적지 매칭
  */
-export function getRandomQuest(options: { startSongId?: string; inGiant?: boolean } = {}): QuestPayload {
+/**
+ * 자유 연습 모드를 위한 4-Layer 커스텀 퀘스트 생성기
+ */
+export function getRandomQuest(options: PracticeFilterOptions = {}): QuestPayload {
   const engine = getGraphEngine();
   const store = engine.getStore();
 
   const allSongIds = Array.from(store.songs.keys());
-  let startId = options.startSongId;
+  let startId: string | undefined = undefined;
 
-  // 출발 곡이 주어지지 않은 경우: 조건에 맞게 랜덤 선별
+  // 1. [Layer 1] 출발지 결정
+  if (options.startMode === "song" && options.startId && store.songs.has(options.startId)) {
+    startId = options.startId;
+  } else if ((options.startMode === "artist" || options.startMode === "creator") && options.startId) {
+    const personSongs = engine.getConnectedSongs(options.startId, { includeGroupHops: true });
+    // 인물 참여곡 중 속성 필터 부합 곡 우선
+    const matched = personSongs.filter((s) => {
+      const tuple = store.songs.get(s.id);
+      return tuple ? checkSongMatchesFilters(tuple, options) : true;
+    });
+    if (matched.length > 0) {
+      startId = matched[0].id;
+    } else if (personSongs.length > 0) {
+      startId = personSongs[0].id;
+    }
+  }
+
+  // 출발지가 아직 결정되지 않은 경우: 속성 필터(Layer 2)를 만족하는 곡 탐색
   if (!startId || !store.songs.has(startId)) {
     const preferGiant = options.inGiant !== false;
-    for (let attempt = 0; attempt < 50; attempt++) {
+    for (let attempt = 0; attempt < 150; attempt++) {
       const candId = allSongIds[Math.floor(Math.random() * allSongIds.length)];
       const s = store.songs.get(candId)!;
-      // 좋아요 300 이상인 곡 우선 선별
-      if (s[5] > 300 && (preferGiant ? s[7] === 1 : s[7] === 0)) {
+      if (checkSongMatchesFilters(s, options) && (preferGiant ? s[7] === 1 : true)) {
         startId = candId;
         break;
       }
@@ -162,59 +210,135 @@ export function getRandomQuest(options: { startSongId?: string; inGiant?: boolea
   const startSong = engine.getSong(startId)!;
   const isIsland = !startSong.inGiant;
 
+  // 2. [Layer 4] 거리 범위 설정
+  let minTurns = 2;
+  let maxTurns = 4;
+  if (options.turnDistance === "short") {
+    minTurns = 1;
+    maxTurns = 2;
+  } else if (options.turnDistance === "standard") {
+    minTurns = 3;
+    maxTurns = 4;
+  } else if (options.turnDistance === "long") {
+    minTurns = 5;
+    maxTurns = 6;
+  } else if (options.turnDistance === "any") {
+    minTurns = 1;
+    maxTurns = 12;
+  }
+
+  // 3. [Layer 1] 도착지 결정
   let targetId = "";
-  let shortestPathRes = engine.findShortestPath(startId, startId);
+  let targetPersonMeta: { id: string; name: string; isGroup?: boolean } | undefined = undefined;
+  let shortestPathRes = engine.findShortestPath(startId, startId, {
+    allowedRoles: options.allowedRoles
+  });
 
-  // (A) 소규모 독립 섬인 경우 ➔ 도달 가능한 서브그래프 내부에서만 목적지 선별
-  if (isIsland) {
-    const reachable = findConnectedSongs(startId, 300);
-    // 2턴 이상 떨어져 있는 곡 탐색
-    for (const candTarget of reachable) {
-      const pathRes = engine.findShortestPath(startId, candTarget);
-      if (pathRes.found && pathRes.turns >= 2 && pathRes.turns <= 4) {
-        targetId = candTarget;
-        shortestPathRes = pathRes;
-        break;
-      }
+  if (options.targetMode === "song" && options.targetId && store.songs.has(options.targetId)) {
+    targetId = options.targetId;
+    shortestPathRes = engine.findShortestPath(startId, targetId, {
+      allowedRoles: options.allowedRoles
+    });
+  } else if ((options.targetMode === "artist" || options.targetMode === "creator") && options.targetId) {
+    const person = store.getPerson(options.targetId);
+    if (person) {
+      targetPersonMeta = { id: person.id, name: person.name, isGroup: person.isGroup };
     }
-    // 없으면 도달 가능한 아무 곡이나 선별
-    if (!targetId && reachable.length > 0) {
-      targetId = reachable[reachable.length - 1];
-      shortestPathRes = engine.findShortestPath(startId, targetId);
-    }
-  }
-
-  // (B) 메인 대륙 곡인 경우 ➔ 2~4턴 최적 거리의 유명 곡 선별
-  if (!targetId) {
-    for (let attempt = 0; attempt < 100; attempt++) {
-      const candTarget = allSongIds[Math.floor(Math.random() * allSongIds.length)];
-      if (candTarget === startId) continue;
-      const tSong = store.songs.get(candTarget)!;
-      if (tSong[5] < 300 || tSong[7] !== 1) continue;
-
-      const pathRes = engine.findShortestPath(startId, candTarget);
-      if (pathRes.found && pathRes.turns >= 2 && pathRes.turns <= 4) {
-        targetId = candTarget;
+    const personSongs = engine.getConnectedSongs(options.targetId, { includeGroupHops: true });
+    // 인물 참여곡 중 속성 필터 부합 및 출발곡과 다른 곡 탐색
+    for (const s of personSongs) {
+      if (s.id === startId) continue;
+      const pathRes = engine.findShortestPath(startId, s.id, {
+        allowedRoles: options.allowedRoles
+      });
+      if (pathRes.found) {
+        targetId = s.id;
         shortestPathRes = pathRes;
-        break;
+        if (pathRes.turns >= minTurns && pathRes.turns <= maxTurns) {
+          break;
+        }
       }
     }
   }
 
-  // 최종 대체 (시드 첫 번째 퀘스트 도착곡)
+  // 4. 도착지가 랜덤이거나 지정되지 않은 경우: Layer 2 속성 및 Layer 4 거리에 부합하는 유명 곡 탐색
   if (!targetId) {
-    targetId = "34211693";
-    shortestPathRes = engine.findShortestPath(startId, targetId);
+    // (A) 소규모 독립 섬인 경우 ➔ 도달 가능한 서브그래프 내부에서만 목적지 선별
+    if (isIsland) {
+      const reachable = findConnectedSongs(startId, 300);
+      for (const candTarget of reachable) {
+        if (candTarget === startId) continue;
+        const pathRes = engine.findShortestPath(startId, candTarget, {
+          allowedRoles: options.allowedRoles
+        });
+        if (pathRes.found && pathRes.turns >= minTurns && pathRes.turns <= maxTurns) {
+          targetId = candTarget;
+          shortestPathRes = pathRes;
+          break;
+        }
+      }
+      if (!targetId && reachable.length > 0) {
+        targetId = reachable[reachable.length - 1];
+        shortestPathRes = engine.findShortestPath(startId, targetId, {
+          allowedRoles: options.allowedRoles
+        });
+      }
+    }
+
+    // (B) 메인 대륙 곡인 경우 ➔ 조건 만족 목적지 탐색
+    if (!targetId) {
+      for (let attempt = 0; attempt < 120; attempt++) {
+        const candTarget = allSongIds[Math.floor(Math.random() * allSongIds.length)];
+        if (candTarget === startId) continue;
+        const tSong = store.songs.get(candTarget)!;
+        if (!checkSongMatchesFilters(tSong, options)) continue;
+
+        const pathRes = engine.findShortestPath(startId, candTarget, {
+          allowedRoles: options.allowedRoles
+        });
+        if (pathRes.found && pathRes.turns >= minTurns && pathRes.turns <= maxTurns) {
+          targetId = candTarget;
+          shortestPathRes = pathRes;
+          break;
+        }
+      }
+    }
+
+    // (C) 여전히 못 찾은 경우: 거리 제약 완화하여 아무 유효 도달 곡 탐색
+    if (!targetId) {
+      for (let attempt = 0; attempt < 50; attempt++) {
+        const candTarget = allSongIds[Math.floor(Math.random() * allSongIds.length)];
+        if (candTarget === startId) continue;
+        const pathRes = engine.findShortestPath(startId, candTarget, {
+          allowedRoles: options.allowedRoles
+        });
+        if (pathRes.found && pathRes.turns >= 1) {
+          targetId = candTarget;
+          shortestPathRes = pathRes;
+          break;
+        }
+      }
+    }
+
+    // 최종 대체
+    if (!targetId) {
+      targetId = "34211693";
+      shortestPathRes = engine.findShortestPath(startId, targetId, {
+        allowedRoles: options.allowedRoles
+      });
+    }
   }
 
   const targetSong = engine.getSong(targetId)!;
 
   return {
-    questId: `random_${Date.now()}`,
+    questId: `practice_${Date.now()}`,
     startSong,
     targetSong,
     optimalTurns: shortestPathRes.turns > 0 ? shortestPathRes.turns : 3,
     optimalPath: shortestPathRes.path,
-    isIsland
+    isIsland,
+    allowedRoles: options.allowedRoles,
+    targetPerson: targetPersonMeta
   };
 }

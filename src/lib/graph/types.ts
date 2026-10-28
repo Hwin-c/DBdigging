@@ -103,6 +103,7 @@ export interface PersonInfo {
 export interface ConnectedPerson extends PersonInfo {
   roles: RoleCode[];
   roleLabels: string[];
+  movableSongCount?: number; // 심해 모드 및 탐색에서 이동 가능한 유효 곡 수
   // 멤버인 경우 소속 그룹 목록, 그룹인 경우 소속 멤버 목록
   affiliatedGroups?: PersonInfo[];
   affiliatedMembers?: PersonInfo[];
@@ -141,6 +142,68 @@ export interface QuestPayload {
   optimalTurns: number;
   optimalPath: string[];
   isIsland?: boolean;
+  allowedRoles?: RoleCode[];
+  targetPerson?: {
+    id: string;
+    name: string;
+    isGroup?: boolean;
+  };
+}
+
+/**
+ * 2-Mode 이종 네트워크 탐험 트리 노드 모델
+ */
+export type ExplorationNodeType = "song" | "person";
+
+export interface ExplorationNode {
+  nodeId: string;
+  nodeType: ExplorationNodeType; // "song" | "person"
+  songId?: string;
+  song?: SongInfo;
+  personId?: string;
+  personName?: string;
+  isGroup?: boolean;
+  depth: number;
+  parentNodeId?: string;
+  viaRoleCodes?: RoleCode[];
+  viaRoleLabels?: string[];
+  roles?: RoleCode[];
+  roleLabels?: string[];
+  viaPerson?: {
+    id: string;
+    name: string;
+    roles: RoleCode[];
+    roleLabels: string[];
+  };
+  childrenNodeIds: string[];
+  isCurrent: boolean;
+  isPending?: boolean; // Step 1에서 선택된 임시 아티스트 캡슐 노드
+  isStart?: boolean;
+  isTarget?: boolean;
+}
+
+/**
+ * 자유 연습 4-Layer 필터 옵션
+ */
+export interface PracticeFilterOptions {
+  // Layer 1: 출발/도착 정밀 지정
+  startMode?: "random" | "song" | "artist" | "creator";
+  startId?: string;
+  startName?: string;
+  targetMode?: "random" | "song" | "artist" | "creator";
+  targetId?: string;
+  targetName?: string;
+  // Layer 2: 노드 속성 필터
+  genre?: string;
+  decade?: string;
+  agency?: string;
+  titleOnly?: boolean;
+  minLikes?: number;
+  // Layer 3: 허용 크레딧 역할
+  allowedRoles?: RoleCode[];
+  // Layer 4: 목표 최단 턴 거리
+  turnDistance?: "short" | "standard" | "long" | "any"; // 1~2, 3~4, 5~6, any
+  inGiant?: boolean;
 }
 
 /**

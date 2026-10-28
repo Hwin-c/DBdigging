@@ -320,43 +320,59 @@ export function DeepSeaTurnView({
             <p className="text-xs text-slate-600">[전체] 탭을 누르거나 검색어를 지워보세요.</p>
           </div>
         ) : !selectedPerson ? (
-          // (A) 인물/그룹 카드 그리드 (Step 1)
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+          // (A) 인물/그룹 카드 그리드 (Step 1 - 2열 와이드 콘솔)
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
             {(pagedItems as ConnectedPerson[]).map((person) => {
               const isOptimal =
                 isHintMode &&
                 currentMission &&
                 currentMission.validBridgePersonIds.includes(person.id);
 
+              const isNoMovable = person.movableSongCount !== undefined && person.movableSongCount === 0;
+              const isCurrentArtist = person.name.trim().toLowerCase() === currentSong.artist.trim().toLowerCase();
+
               return (
                 <button
                   key={person.id}
-                  onClick={() => handlePersonClick(person)}
-                  className={`group relative flex flex-col justify-between p-3.5 rounded-xl border text-left transition-all active:scale-95 ${
-                    isOptimal
+                  onClick={() => !isNoMovable && handlePersonClick(person)}
+                  disabled={isNoMovable}
+                  className={`group relative flex flex-col justify-between p-4 rounded-xl border text-left transition-all active:scale-95 ${
+                    isNoMovable
+                      ? "opacity-40 bg-slate-950/40 border-slate-900 cursor-not-allowed"
+                      : isOptimal
                       ? "bg-amber-950/30 border-amber-400 shadow-[0_0_15px_rgba(245,158,11,0.3)] hover:border-amber-300"
                       : "bg-slate-950/60 border-slate-800 hover:border-cyan-500/60 hover:bg-slate-800/50 shadow-sm"
                   }`}
                 >
                   <div className="space-y-2">
-                    <div className="flex items-center justify-between gap-1">
-                      {isOptimal ? (
+                    <div className="flex items-center justify-between gap-1 flex-wrap">
+                      {isNoMovable ? (
+                        <span className="text-[10px] font-bold px-2 py-0.5 rounded bg-rose-950/60 text-rose-400 border border-rose-800/40">
+                          🚫 이동 가능한 타 가수 곡 없음
+                        </span>
+                      ) : isOptimal ? (
                         <OptimalHintBadge />
                       ) : (
-                        <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-slate-800 text-slate-400">
+                        <span className="text-[10px] font-bold px-2 py-0.5 rounded bg-slate-800 text-slate-400">
                           {person.isGroup ? "👥 그룹" : "👤 개인"}
+                        </span>
+                      )}
+
+                      {isCurrentArtist && !isNoMovable && (
+                        <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-amber-950/60 text-amber-300 border border-amber-500/30">
+                          ⚠️ 타 가수 참여/그룹 곡만 이동 가능
                         </span>
                       )}
                     </div>
 
                     <div>
-                      <h4 className="text-sm font-bold text-white group-hover:text-cyan-300 transition-colors line-clamp-1">
+                      <h4 className="text-sm sm:text-base font-bold text-white group-hover:text-cyan-300 transition-colors break-words leading-snug line-clamp-2">
                         {person.name}
                       </h4>
                     </div>
                   </div>
 
-                  <div className="mt-3 pt-2 border-t border-slate-800/80">
+                  <div className="mt-3 pt-2.5 border-t border-slate-800/80">
                     <RoleBadgeList roles={person.roles ?? []} size="sm" />
                   </div>
                 </button>
@@ -364,12 +380,16 @@ export function DeepSeaTurnView({
             })}
           </div>
         ) : (
-          // (B) 다음 곡 카드 그리드 (Step 2 - 스포일러 블라인드 적용)
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+          // (B) 다음 곡 카드 그리드 (Step 2 - 2열 와이드 콘솔 & 스포일러 블라인드 적용)
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
             {(pagedItems as ConnectedSong[]).map((song) => {
               const isAlreadyVisited = visitedSet.has(song.id);
+              const isSameArtist = song.artist.trim().toLowerCase() === currentSong.artist.trim().toLowerCase();
+              const isDisabled = isAlreadyVisited || isSameArtist;
+
               const isOptimal =
                 isHintMode &&
+                !isSameArtist &&
                 currentMission &&
                 currentMission.validTargetSongIds.includes(song.id);
 
@@ -388,21 +408,25 @@ export function DeepSeaTurnView({
               return (
                 <button
                   key={song.id}
-                  onClick={() => !isAlreadyVisited && onSelectSong(song, selectedPerson)}
-                  disabled={isAlreadyVisited}
-                  className={`group relative flex flex-col justify-between p-3.5 rounded-xl border text-left transition-all active:scale-95 ${
-                    isAlreadyVisited
+                  onClick={() => !isDisabled && onSelectSong(song, selectedPerson)}
+                  disabled={isDisabled}
+                  className={`group relative flex flex-col justify-between p-4 rounded-xl border text-left transition-all active:scale-95 ${
+                    isDisabled
                       ? "opacity-40 bg-slate-950/40 border-slate-900 cursor-not-allowed"
                       : isOptimal
                       ? "bg-amber-950/30 border-amber-400 shadow-[0_0_15px_rgba(245,158,11,0.3)] hover:border-amber-300"
                       : "bg-slate-950/60 border-slate-800 hover:border-cyan-500/60 hover:bg-slate-800/50 shadow-sm"
                   }`}
                 >
-                  <div className="space-y-1.5">
+                  <div className="space-y-2">
                     <div className="flex items-center justify-between gap-1 flex-wrap">
                       {isAlreadyVisited ? (
-                        <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-slate-800 text-slate-500">
+                        <span className="text-[10px] font-bold px-2 py-0.5 rounded bg-slate-800 text-slate-500">
                           방문 완료
+                        </span>
+                      ) : isSameArtist ? (
+                        <span className="text-[10px] font-bold px-2 py-0.5 rounded bg-rose-950/60 text-rose-400 border border-rose-800/40">
+                          🚫 동일 가수 연속 이동 불가
                         </span>
                       ) : isOptimal ? (
                         <OptimalHintBadge />
@@ -411,13 +435,15 @@ export function DeepSeaTurnView({
                     </div>
 
                     <div>
-                      <h4 className="text-sm font-bold text-white group-hover:text-cyan-300 transition-colors line-clamp-1">
+                      <h4 className="text-sm sm:text-base font-bold text-white group-hover:text-cyan-300 transition-colors break-words leading-snug line-clamp-2">
                         {song.title}
                       </h4>
-                      <p className="text-xs text-slate-400 line-clamp-1 font-medium">{song.artist}</p>
+                      <p className="text-xs text-slate-400 break-words leading-snug line-clamp-2 font-medium mt-0.5">
+                        {song.artist}
+                      </p>
                     </div>
 
-                    <div className="flex items-center gap-1.5 text-[10px] text-slate-400 flex-wrap">
+                    <div className="flex items-center gap-1.5 text-[10px] text-slate-400 flex-wrap pt-1">
                       <span
                         className={
                           isYearMasked
@@ -442,7 +468,7 @@ export function DeepSeaTurnView({
                     </div>
                   </div>
 
-                  <div className="mt-3 pt-2 border-t border-slate-800/80 flex items-center justify-between">
+                  <div className="mt-3 pt-2.5 border-t border-slate-800/80 flex items-center justify-between">
                     <RoleBadgeList roles={song.roles ?? []} size="sm" />
                     <span className="text-[10px] text-rose-400/80 flex items-center gap-0.5">
                       <Heart className="w-2.5 h-2.5 fill-rose-400/30" />

@@ -61,6 +61,8 @@ export function issueDeepSeaMission(
     const pSongs = engine.getConnectedSongs(person.id, { includeGroupHops: true });
     for (const song of pSongs) {
       if (excludeSet.has(song.id)) continue;
+      // [동일 가창자 자기복제 차단] 현재 곡과 가창자가 동일한 곡은 2-hop 유효 정답 후보에서 제외
+      if (song.artist.trim().toLowerCase() === fromSong.artist.trim().toLowerCase()) continue;
 
       let entry = twoHopSongMap.get(song.id);
       if (!entry) {
@@ -201,11 +203,39 @@ export function validateDeepSeaStep(
 
   // any_song 자유 다이빙은 무조건 성공
   if (condition === "any_song") {
+    // any_song이어도 동일 가창자 자기복제는 차단
+    if (fromSong.artist.trim().toLowerCase() === toSong.artist.trim().toLowerCase()) {
+      return {
+        isValid: false,
+        requestedCondition: condition,
+        activeCondition: condition,
+        fallbackApplied: false,
+        fallbackReason: "동일 가창자 곡으로는 연속 이동할 수 없습니다. (타 가수의 곡으로 이동해야 함)",
+        fromSong,
+        toSong,
+        melonUrl: getMelonSongUrl(toSongId)
+      };
+    }
+
     return {
       isValid: true,
       requestedCondition: condition,
       activeCondition: condition,
       fallbackApplied: false,
+      fromSong,
+      toSong,
+      melonUrl: getMelonSongUrl(toSongId)
+    };
+  }
+
+  // 일반 조건에서도 동일 가창자 자기복제는 즉시 무효 처리
+  if (fromSong.artist.trim().toLowerCase() === toSong.artist.trim().toLowerCase()) {
+    return {
+      isValid: false,
+      requestedCondition: condition,
+      activeCondition: condition,
+      fallbackApplied: false,
+      fallbackReason: "동일 가창자 곡으로는 연속 이동할 수 없습니다. (타 가수의 곡으로 이동해야 함)",
       fromSong,
       toSong,
       melonUrl: getMelonSongUrl(toSongId)

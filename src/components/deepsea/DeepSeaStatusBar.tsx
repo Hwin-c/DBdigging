@@ -65,18 +65,18 @@ export function DeepSeaStatusBar({
   const missionMeta = getMissionMeta();
 
   return (
-    <div className="w-full bg-gradient-to-r from-[#071322]/90 via-[#0a1b30]/90 to-[#071322]/90 border border-cyan-500/30 rounded-2xl p-4 sm:p-5 shadow-[0_4px_25px_rgba(6,182,212,0.15)] backdrop-blur-md">
-      <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
+    <div className="w-full bg-gradient-to-r from-[#071322]/90 via-[#0a1b30]/90 to-[#071322]/90 border border-cyan-500/30 rounded-2xl p-4 sm:p-5 shadow-[0_4px_25px_rgba(6,182,212,0.15)] backdrop-blur-md mb-6">
+      <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4">
         {/* Left: Depth Meter & Hearts HUD */}
         <div className="flex items-center gap-4 flex-wrap">
           {/* Depth Counter HUD */}
-          <div className="flex items-center gap-2.5 bg-slate-950/70 border border-cyan-500/40 px-3.5 py-2 rounded-xl shadow-[0_0_15px_rgba(6,182,212,0.2)]">
+          <div className="flex items-center gap-2.5 bg-slate-950/70 border border-cyan-500/40 px-3.5 py-2.5 rounded-xl shadow-[0_0_15px_rgba(6,182,212,0.2)]">
             <Waves className="w-5 h-5 text-cyan-400 animate-bounce" />
             <div>
               <div className="text-[10px] text-cyan-400/80 font-bold uppercase tracking-wider">
                 현재 수심
               </div>
-              <div className="text-lg sm:text-xl font-black text-cyan-200 tracking-tight">
+              <div className="text-xl font-black text-cyan-200 tracking-tight leading-none">
                 {depth}m
               </div>
             </div>
@@ -84,7 +84,7 @@ export function DeepSeaStatusBar({
 
           {/* Hearts HUD */}
           <div
-            className={`flex items-center gap-1.5 bg-slate-950/70 border px-3.5 py-2.5 rounded-xl ${
+            className={`flex items-center gap-2 bg-slate-950/70 border px-3.5 py-2.5 rounded-xl ${
               isDanger
                 ? "border-rose-500/80 shadow-[0_0_15px_rgba(244,63,94,0.4)] animate-pulse"
                 : "border-slate-800"
@@ -114,32 +114,32 @@ export function DeepSeaStatusBar({
           </div>
         </div>
 
-        {/* Center/Right: Current Mission Card */}
-        <div className="flex-1 max-w-lg">
+        {/* Center: Current Mission Card (Zero Truncation) */}
+        <div className="flex-1">
           <div
-            className={`flex items-center justify-between gap-2 px-3.5 py-2 rounded-xl border text-xs font-bold ${missionMeta.badgeColor}`}
+            className={`flex items-center justify-between gap-3 px-4 py-2.5 rounded-xl border text-xs sm:text-sm font-bold ${missionMeta.badgeColor}`}
           >
-            <div className="flex items-center gap-2 truncate">
+            <div className="flex items-center gap-2 leading-tight">
               {missionMeta.icon}
-              <span className="truncate">{missionMeta.badgeText}</span>
+              <span>{missionMeta.badgeText}</span>
             </div>
             {currentMission && currentMission.validCount > 0 && (
-              <span className="text-[10px] px-1.5 py-0.5 rounded bg-black/40 text-cyan-200 shrink-0 border border-white/10">
+              <span className="text-xs px-2 py-0.5 rounded-md bg-black/50 text-cyan-200 shrink-0 border border-white/10 font-bold">
                 정답 {currentMission.validCount}곡
               </span>
             )}
           </div>
         </div>
 
-        {/* Right: Emergency Surface Button */}
-        <div className="flex items-center justify-end">
+        {/* Right: Emergency Surface Button (Zero Truncation) */}
+        <div className="flex items-center justify-end shrink-0">
           <button
             onClick={onSurface}
-            className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-bold bg-slate-900/80 hover:bg-slate-800 text-amber-300 border border-amber-500/40 hover:border-amber-400 transition-all active:scale-95 shadow-[0_0_10px_rgba(245,158,11,0.15)]"
+            className="flex items-center gap-2 px-4 py-2.5 rounded-xl text-xs font-bold bg-slate-900/80 hover:bg-slate-800 text-amber-300 border border-amber-500/40 hover:border-amber-400 transition-all active:scale-95 shadow-[0_0_10px_rgba(245,158,11,0.15)] whitespace-nowrap shrink-0"
             title="현재 수심에서 다이빙을 마치고 플레이리스트를 수확합니다"
           >
-            <Anchor className="w-3.5 h-3.5 text-amber-400" />
-            <span>중도 부상 (다이빙 종료)</span>
+            <Anchor className="w-4 h-4 text-amber-400" />
+            <span>⚓ 다이빙 종료 (중도 부상)</span>
           </button>
         </div>
       </div>

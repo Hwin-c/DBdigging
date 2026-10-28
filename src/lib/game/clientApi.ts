@@ -19,7 +19,9 @@ import {
   DeepSeaMission,
   PersonInfo,
   QuestPayload,
-  SongInfo
+  SongInfo,
+  RoleCode,
+  PracticeFilterOptions
 } from "../graph/types";
 
 let initPromise: Promise<{ engine: GraphEngine }> | null = null;
@@ -81,25 +83,42 @@ export const clientApi = {
   },
 
   /**
-   * 자유 연습 모드 랜덤 퀘스트 생성
+   * 자유 연습 모드 랜덤 퀘스트 생성 (4-Layer 옵션 지원)
    */
-  async getRandomQuest(options: { startSongId?: string; inGiant?: boolean } = {}): Promise<QuestPayload> {
+  async getRandomQuest(options: PracticeFilterOptions = {}): Promise<QuestPayload> {
     await ensureGraphLoaded();
     return getRandomQuestInternal(options);
   },
 
   /**
-   * 곡 또는 인물 노드 탐색 & 힌트 Hoisting
+   * 곡 또는 인물 노드 탐색 & 힌트 Hoisting & movableSongCount 산출
    */
   async inspectGraph(options: {
     songId?: string;
     personId?: string;
     currentSongId?: string;
     targetSongId?: string;
+    currentSongArtist?: string;
+    excludeSongIds?: string[];
+    allowedRoles?: RoleCode[];
     includeGroupHops?: boolean;
   }): Promise<InspectResult> {
     const { engine } = await ensureGraphLoaded();
-    const { songId, personId, currentSongId, targetSongId, includeGroupHops = true } = options;
+    const {
+      songId,
+      personId,
+      currentSongId,
+      targetSongId,
+      currentSongArtist,
+      excludeSongIds,
+      allowedRoles,
+      includeGroupHops: reqIncludeGroupHops
+    } = options;
+
+    const includeGroupHops =
+      allowedRoles && allowedRoles.length > 0
+        ? allowedRoles.includes(6)
+        : reqIncludeGroupHops !== false;
 
     // 1. 곡 기준 인물 목록 조회
     if (songId) {
@@ -108,13 +127,41 @@ export const clientApi = {
         throw new Error(`Song not found: ${songId}`);
       }
 
-      const connectedPersons = [...engine.getConnectedPersons(songId)];
+      let connectedPersons = [...engine.getConnectedPersons(songId)];
+
+      // allowedRoles 제약 조건 적용
+      if (allowedRoles && allowedRoles.length > 0) {
+        const allowedSet = new Set(allowedRoles);
+        connectedPersons = connectedPersons.filter((p) =>
+          p.roles.some((r) => allowedSet.has(r))
+        );
+      }
+
+      // movableSongCount 산출 (현재 가창자 제외 및 방문 곡 제외)
+      const visitedSet = new Set(excludeSongIds || []);
+      if (currentSongId) visitedSet.add(currentSongId);
+      const currArtistNorm = (currentSongArtist || song.artist).trim().toLowerCase();
+
+      for (const person of connectedPersons) {
+        const pSongs = engine.getConnectedSongs(person.id, { includeGroupHops });
+        const movable = pSongs.filter((s) => {
+          if (visitedSet.has(s.id)) return false;
+          if (s.artist.trim().toLowerCase() === currArtistNorm) return false;
+          if (allowedRoles && allowedRoles.length > 0) {
+            const allowedSet = new Set(allowedRoles);
+            if (!s.roles.some((r) => allowedSet.has(r))) return false;
+          }
+          return true;
+        });
+        person.movableSongCount = movable.length;
+      }
+
       let optimalNextId: string | null = null;
       let remainingTurns: number | null = null;
 
       // 힌트 모드 (targetSongId 전달 시 최적 노드 Hoisting)
       if (targetSongId) {
-        const pathRes = engine.findShortestPath(songId, targetSongId);
+        const pathRes = engine.findShortestPath(songId, targetSongId, { allowedRoles });
         if (pathRes.found && pathRes.path.length >= 2) {
           optimalNextId = pathRes.path[1];
           remainingTurns = pathRes.turns;
@@ -153,6 +200,14 @@ export const clientApi = {
         connectedSongs = connectedSongs.filter((s) => s.id !== currentSongId);
       }
 
+      // allowedRoles 제약 조건 적용
+      if (allowedRoles && allowedRoles.length > 0) {
+        const allowedSet = new Set(allowedRoles);
+        connectedSongs = connectedSongs.filter((s) =>
+          s.roles.some((r) => allowedSet.has(r))
+        );
+      }
+
       const connectedSongIdSet = new Set(connectedSongs.map((s) => s.id));
       let optimalNextId: string | null = null;
       let remainingTurns: number | null = null;
@@ -168,7 +223,7 @@ export const clientApi = {
           // 경우 A: 만약 currentSongId 기준 최단 경로 상 첫 인물이 선택된 personId와 일치하는 경우
           let foundViaShortestPath = false;
           if (currentSongId) {
-            const spRes = engine.findShortestPath(currentSongId, targetSongId);
+            const spRes = engine.findShortestPath(currentSongId, targetSongId, { allowedRoles });
             if (spRes.found && spRes.path.length >= 3 && spRes.path[1] === personId) {
               // 1-hop 그룹 징검다리 대응: path.slice(2)에서 connectedSongIdSet에 속한 첫 번째 곡 찾기
               const nextValidSongId = spRes.path.slice(2).find((id) => connectedSongIdSet.has(id));
@@ -183,7 +238,9 @@ export const clientApi = {
           // 경우 B: 다른 인물을 골랐거나 최단 경로와 다른 브랜치인 경우
           // 개별 루프 대신 engine.findClosestCandidateSong 단일 역방향 BFS 실행 (브라우저 프리징 0%)
           if (!foundViaShortestPath) {
-            const closest = engine.findClosestCandidateSong(connectedSongIdSet, targetSongId);
+            const closest = engine.findClosestCandidateSong(connectedSongIdSet, targetSongId, {
+              allowedRoles
+            });
             if (closest) {
               optimalNextId = closest.songId;
               remainingTurns = closest.turns + 1;

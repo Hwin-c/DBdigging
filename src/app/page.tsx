@@ -34,7 +34,7 @@ import {
   UserStatsPayload
 } from "@/lib/storage/stats";
 import { clientApi, ensureGraphLoaded } from "@/lib/game/clientApi";
-import { Disc3, Waves } from "lucide-react";
+import { Disc3 } from "lucide-react";
 
 function getDiverTitle(depth: number): string {
   if (depth >= 1300) return "🔱 마리아나 마스터";
@@ -138,15 +138,16 @@ export default function DBDiggingPage() {
   }, []);
 
   // ----------------------------------------------------
-  // [모드 1] 데일리 퀘스트 로드 & 초기 탐험 트리 생성
+  // [모드 1] 데일리 퀘스트 로드 & 초기 2-Mode 탐험 트리 생성
   // ----------------------------------------------------
   const loadDailyQuest = useCallback(async () => {
     setIsQuestLoading(true);
     try {
       const data: QuestPayload = await clientApi.getDailyQuest();
-      const rootNodeId = `node_${data.startSong.id}_0_${Date.now()}`;
+      const rootNodeId = `node_song_${data.startSong.id}_0_${Date.now()}`;
       const rootNode: ExplorationNode = {
         nodeId: rootNodeId,
+        nodeType: "song",
         songId: data.startSong.id,
         song: data.startSong,
         depth: 0,
@@ -205,14 +206,15 @@ export default function DBDiggingPage() {
     };
   }, [loadDailyQuest, showToast]);
 
-  // [모드 1] 인물 목록 조회
+  // [모드 1] 인물 목록 조회 (퀘스트 allowedRoles 필터 전달)
   const fetchConnectedPersons = useCallback(
     async (songId: string) => {
       setIsGraphLoading(true);
       try {
         const data = await clientApi.inspectGraph({
           songId,
-          targetSongId: isHintMode && quest ? quest.targetSong.id : undefined
+          targetSongId: isHintMode && quest ? quest.targetSong.id : undefined,
+          allowedRoles: quest?.allowedRoles
         });
         if (isPractice) {
           setPracticeConnectedPersons(data.connectedPersons || []);
@@ -235,7 +237,7 @@ export default function DBDiggingPage() {
     }
   }, [isEngineReady, gameMode, currentSong, selectedPerson, isHintMode, isHardcore, fetchConnectedPersons]);
 
-  // [모드 1] 인물 선택 -> 곡 조회 (currentSongId 제외 및 역방향 BFS 힌트 결합)
+  // [모드 1] 인물 선택 (Step 1 클릭) -> 2-Mode 임시(Pending) 노드 점등 & 곡 조회
   const handleSelectPerson = async (person: ConnectedPerson) => {
     if (isPractice) {
       setPracticeSelectedPerson(person);
@@ -243,12 +245,53 @@ export default function DBDiggingPage() {
       setDailySelectedPerson(person);
     }
 
+    // 2-Mode Tree Pending Person Node Injection
+    const pendingPersonNodeId = `node_person_${person.id}_${Date.now()}`;
+    const pendingNode: ExplorationNode = {
+      nodeId: pendingPersonNodeId,
+      nodeType: "person",
+      personId: person.id,
+      personName: person.name,
+      isGroup: person.isGroup,
+      viaRoleCodes: person.roles,
+      viaRoleLabels: person.roleLabels,
+      roles: person.roles,
+      roleLabels: person.roleLabels,
+      depth: historyStack.length,
+      parentNodeId: currentNodeId,
+      childrenNodeIds: [],
+      isCurrent: true,
+      isPending: true
+    };
+
+    const cleanedTree = explorationTree.filter((n) => !n.isPending);
+    const updatedTree = cleanedTree.map((n) =>
+      n.nodeId === currentNodeId
+        ? {
+            ...n,
+            isCurrent: false,
+            childrenNodeIds: [
+              ...n.childrenNodeIds.filter((id) => !id.startsWith("node_person_")),
+              pendingPersonNodeId
+            ]
+          }
+        : { ...n, isCurrent: false }
+    );
+    updatedTree.push(pendingNode);
+
+    if (isPractice) {
+      setPracticeTree(updatedTree);
+    } else {
+      setDailyTree(updatedTree);
+    }
+
     setIsGraphLoading(true);
     try {
       const data = await clientApi.inspectGraph({
         personId: person.id,
         currentSongId: currentSong?.id,
-        targetSongId: isHintMode && quest ? quest.targetSong.id : undefined
+        targetSongId: isHintMode && quest ? quest.targetSong.id : undefined,
+        allowedRoles: quest?.allowedRoles
       });
 
       if (isPractice) {
@@ -265,16 +308,26 @@ export default function DBDiggingPage() {
   };
 
   const handleCancelPersonSelection = () => {
+    const cleanedTree = explorationTree
+      .filter((n) => !n.isPending)
+      .map((n) => ({
+        ...n,
+        isCurrent: n.nodeId === currentNodeId,
+        childrenNodeIds: n.childrenNodeIds.filter((id) => !id.startsWith("node_person_"))
+      }));
+
     if (isPractice) {
       setPracticeSelectedPerson(null);
       setPracticeConnectedSongs([]);
+      setPracticeTree(cleanedTree);
     } else {
       setDailySelectedPerson(null);
       setDailyConnectedSongs([]);
+      setDailyTree(cleanedTree);
     }
   };
 
-  // [모드 1] 곡 선택 -> 트리 맵 분기(Branching) & 턴 전이
+  // [모드 1] 곡 선택 (Step 2 클릭) -> 2-Mode 영구 트리 분기(Branching) & 턴 전이
   const handleSelectSong = (nextSong: ConnectedSong | SongInfo, viaPerson: ConnectedPerson) => {
     if (!quest) return;
 
@@ -290,15 +343,45 @@ export default function DBDiggingPage() {
 
     const nextHistory = [...historyStack, newStep];
     const nextDepth = nextHistory.length - 1;
-    const nextNodeId = `node_${nextSong.id}_${nextDepth}_${Date.now()}`;
 
-    // 실시간 탐험 트리 업데이트 (기존 가지는 보존하고 새 노드 추가)
-    const nextNode: ExplorationNode = {
-      nodeId: nextNodeId,
+    // Solidify or create person node
+    let personNodeId = `node_person_${viaPerson.id}_${Date.now()}`;
+    const pendingNode = explorationTree.find((n) => n.isPending && n.personId === viaPerson.id);
+    if (pendingNode) {
+      personNodeId = pendingNode.nodeId;
+    }
+
+    const nextSongNodeId = `node_song_${nextSong.id}_${nextDepth}_${Date.now()}`;
+
+    // Parent song node
+    const parentSongNodeId = currentNodeId.startsWith("node_person_")
+      ? (explorationTree.find((n) => n.nodeId === currentNodeId)?.parentNodeId ?? currentNodeId)
+      : (pendingNode?.parentNodeId ?? currentNodeId);
+
+    const personNode: ExplorationNode = {
+      nodeId: personNodeId,
+      nodeType: "person",
+      personId: viaPerson.id,
+      personName: viaPerson.name,
+      isGroup: viaPerson.isGroup,
+      viaRoleCodes: viaPerson.roles ?? [],
+      viaRoleLabels: viaPerson.roleLabels ?? [],
+      roles: viaPerson.roles ?? [],
+      roleLabels: viaPerson.roleLabels ?? [],
+      depth: nextDepth,
+      parentNodeId: parentSongNodeId,
+      childrenNodeIds: [nextSongNodeId],
+      isCurrent: false,
+      isPending: false
+    };
+
+    const nextSongNode: ExplorationNode = {
+      nodeId: nextSongNodeId,
+      nodeType: "song",
       songId: nextSong.id,
       song: nextSong,
       depth: nextDepth,
-      parentNodeId: currentNodeId,
+      parentNodeId: personNodeId,
       viaPerson: {
         id: viaPerson.id,
         name: viaPerson.name,
@@ -311,25 +394,34 @@ export default function DBDiggingPage() {
       isTarget: nextSong.id === quest.targetSong.id
     };
 
-    const updatedTree = explorationTree.map((n) =>
-      n.nodeId === currentNodeId
-        ? { ...n, isCurrent: false, childrenNodeIds: [...n.childrenNodeIds, nextNodeId] }
-        : { ...n, isCurrent: false }
-    );
-    updatedTree.push(nextNode);
+    const baseTree = explorationTree.filter((n) => n.nodeId !== personNodeId && !n.isPending);
+    const updatedTree = baseTree.map((n) => {
+      if (n.nodeId === parentSongNodeId) {
+        return {
+          ...n,
+          isCurrent: false,
+          childrenNodeIds: Array.from(
+            new Set([...n.childrenNodeIds.filter((id) => !id.startsWith("node_person_")), personNodeId])
+          )
+        };
+      }
+      return { ...n, isCurrent: false };
+    });
+    updatedTree.push(personNode);
+    updatedTree.push(nextSongNode);
 
     if (isPractice) {
       setPracticeHistoryStack(nextHistory);
       setPracticeCurrentSong(nextSong);
       setPracticeTree(updatedTree);
-      setPracticeCurrentNodeId(nextNodeId);
+      setPracticeCurrentNodeId(nextSongNodeId);
       setPracticeSelectedPerson(null);
       setPracticeConnectedSongs([]);
     } else {
       setDailyHistoryStack(nextHistory);
       setDailyCurrentSong(nextSong);
       setDailyTree(updatedTree);
-      setDailyCurrentNodeId(nextNodeId);
+      setDailyCurrentNodeId(nextSongNodeId);
       setDailySelectedPerson(null);
       setDailyConnectedSongs([]);
     }
@@ -355,32 +447,119 @@ export default function DBDiggingPage() {
     }
   };
 
-  // [모드 1] 탐험 트리 맵 상의 과거 노드 클릭 -> 부모 체인 역추적 백트래킹
-  const handleSelectTreeNode = (targetNode: ExplorationNode) => {
+  // [모드 1] 2-Mode 탐험 트리 맵 상의 노드 클릭 -> 안전 롤백
+  const handleSelectTreeNode = async (targetNode: ExplorationNode) => {
     if (!quest) return;
     if (targetNode.nodeId === currentNodeId) return;
 
-    // targetNode에서 root까지 parentNodeId 체인 역추적
     const nodeMap = new Map<string, ExplorationNode>();
     explorationTree.forEach((n) => nodeMap.set(n.nodeId, n));
 
-    const chain: ExplorationNode[] = [];
+    // Case B: targetNode is a person node
+    if (targetNode.nodeType === "person") {
+      if (targetNode.isPending) {
+        handleCancelPersonSelection();
+        return;
+      }
+
+      // Explored person node: walk up to its parent song node
+      const parentSongNode = targetNode.parentNodeId ? nodeMap.get(targetNode.parentNodeId) : undefined;
+      if (!parentSongNode || !parentSongNode.song) return;
+
+      // Reconstruct song chain up to parentSongNode
+      const songChain: ExplorationNode[] = [];
+      let curr: ExplorationNode | undefined = parentSongNode;
+      while (curr) {
+        if (curr.nodeType === "song") {
+          songChain.push(curr);
+        }
+        curr = curr.parentNodeId ? nodeMap.get(curr.parentNodeId) : undefined;
+      }
+      songChain.reverse(); // root -> parentSongNode
+
+      const reconstructedHistory: HistoryStep[] = songChain.map((n) => ({
+        song: n.song!,
+        viaPerson: n.viaPerson
+      }));
+
+      const targetPerson: ConnectedPerson = {
+        id: targetNode.personId!,
+        name: targetNode.personName || "아티스트",
+        isGroup: Boolean(targetNode.isGroup),
+        roles: targetNode.roles ?? targetNode.viaRoleCodes ?? [],
+        roleLabels: targetNode.roleLabels ?? targetNode.viaRoleLabels ?? []
+      };
+
+      const updatedTree = explorationTree
+        .filter((n) => !n.isPending)
+        .map((n) => ({
+          ...n,
+          isCurrent: n.nodeId === targetNode.nodeId
+        }));
+
+      if (isPractice) {
+        setPracticeHistoryStack(reconstructedHistory);
+        setPracticeCurrentSong(parentSongNode.song);
+        setPracticeTree(updatedTree);
+        setPracticeCurrentNodeId(targetNode.nodeId);
+        setPracticeSelectedPerson(targetPerson);
+      } else {
+        setDailyHistoryStack(reconstructedHistory);
+        setDailyCurrentSong(parentSongNode.song);
+        setDailyTree(updatedTree);
+        setDailyCurrentNodeId(targetNode.nodeId);
+        setDailySelectedPerson(targetPerson);
+      }
+
+      // Fetch songs for this person in Step 2
+      setIsGraphLoading(true);
+      try {
+        const data = await clientApi.inspectGraph({
+          personId: targetPerson.id,
+          currentSongId: parentSongNode.song.id,
+          targetSongId: isHintMode && quest ? quest.targetSong.id : undefined,
+          allowedRoles: quest?.allowedRoles
+        });
+        if (isPractice) {
+          setPracticeConnectedSongs(data.connectedSongs || []);
+        } else {
+          setDailyConnectedSongs(data.connectedSongs || []);
+        }
+      } catch (err) {
+        console.error("[handleSelectTreeNode] Error fetching songs:", err);
+      } finally {
+        setIsGraphLoading(false);
+      }
+
+      showToast(`'${targetPerson.name}'(으)로 되돌아갔습니다. (곡을 선택해 주세요)`, "info");
+      return;
+    }
+
+    // Case A: targetNode is a song node
+    if (!targetNode.song) return;
+
+    // Walk up to root
+    const songChain: ExplorationNode[] = [];
     let curr: ExplorationNode | undefined = targetNode;
     while (curr) {
-      chain.push(curr);
+      if (curr.nodeType === "song") {
+        songChain.push(curr);
+      }
       curr = curr.parentNodeId ? nodeMap.get(curr.parentNodeId) : undefined;
     }
-    chain.reverse(); // root -> targetNode
+    songChain.reverse(); // root -> targetNode
 
-    const reconstructedHistory: HistoryStep[] = chain.map((n) => ({
-      song: n.song,
+    const reconstructedHistory: HistoryStep[] = songChain.map((n) => ({
+      song: n.song!,
       viaPerson: n.viaPerson
     }));
 
-    const updatedTree = explorationTree.map((n) => ({
-      ...n,
-      isCurrent: n.nodeId === targetNode.nodeId
-    }));
+    const updatedTree = explorationTree
+      .filter((n) => !n.isPending)
+      .map((n) => ({
+        ...n,
+        isCurrent: n.nodeId === targetNode.nodeId
+      }));
 
     if (isPractice) {
       setPracticeHistoryStack(reconstructedHistory);
@@ -403,21 +582,41 @@ export default function DBDiggingPage() {
 
   // [모드 1] 버튼 백트래킹 (1턴 직전 곡으로)
   const handleBacktrack = () => {
+    if (selectedPerson) {
+      handleCancelPersonSelection();
+      showToast("인물 선택을 취소했습니다.", "info");
+      return;
+    }
+
     if (historyStack.length <= 1) return;
 
     const newStack = historyStack.slice(0, -1);
     const prevStep = newStack[newStack.length - 1];
 
-    // 트리 상에서 부모 노드 활성화
-    const currentNode = explorationTree.find((n) => n.nodeId === currentNodeId);
-    const parentNodeId = currentNode?.parentNodeId;
+    const nodeMap = new Map<string, ExplorationNode>();
+    explorationTree.forEach((n) => nodeMap.set(n.nodeId, n));
 
-    const updatedTree = explorationTree.map((n) => ({
-      ...n,
-      isCurrent: parentNodeId ? n.nodeId === parentNodeId : n.depth === newStack.length - 1
-    }));
+    let prevSongNodeId = "";
+    let curr = nodeMap.get(currentNodeId);
+    while (curr) {
+      const parent = curr.parentNodeId ? nodeMap.get(curr.parentNodeId) : undefined;
+      if (parent && parent.nodeType === "song") {
+        prevSongNodeId = parent.nodeId;
+        break;
+      }
+      curr = parent;
+    }
 
-    const nextCurrentNodeId = parentNodeId || (updatedTree.find((n) => n.isCurrent)?.nodeId ?? "");
+    const updatedTree = explorationTree
+      .filter((n) => !n.isPending)
+      .map((n) => ({
+        ...n,
+        isCurrent: prevSongNodeId
+          ? n.nodeId === prevSongNodeId
+          : n.songId === prevStep.song.id && n.nodeType === "song"
+      }));
+
+    const nextCurrentNodeId = prevSongNodeId || (updatedTree.find((n) => n.isCurrent)?.nodeId ?? "");
 
     if (isPractice) {
       setPracticeHistoryStack(newStack);
@@ -438,11 +637,12 @@ export default function DBDiggingPage() {
     showToast(`'${prevStep.song.title}'(으)로 되돌아갔습니다. (턴 차감)`, "info");
   };
 
-  // [모드 1] 연습 모드 런처 (실제 새 퀘스트 시작 시에만 practice 전환)
+  // [모드 1] 연습 모드 런처 (4-Layer 커스텀 퀘스트 시작)
   const handleLaunchPracticeQuest = (newQuest: QuestPayload) => {
-    const rootNodeId = `node_${newQuest.startSong.id}_0_${Date.now()}`;
+    const rootNodeId = `node_song_${newQuest.startSong.id}_0_${Date.now()}`;
     const rootNode: ExplorationNode = {
       nodeId: rootNodeId,
+      nodeType: "song",
       songId: newQuest.startSong.id,
       song: newQuest.startSong,
       depth: 0,
@@ -498,8 +698,12 @@ export default function DBDiggingPage() {
         const missionData = await clientApi.getDeepSeaMission(baseSong.id, [baseSong.id]);
         setDeepSeaMission(missionData.mission);
 
-        // 2. 현재 곡 기준 연결된 인물 목록 조회
-        const inspectData = await clientApi.inspectGraph({ songId: baseSong.id });
+        // 2. 현재 곡 기준 연결된 인물 목록 조회 (동일 가수 배제 및 movableSongCount 계산 전달)
+        const inspectData = await clientApi.inspectGraph({
+          songId: baseSong.id,
+          currentSongArtist: baseSong.artist,
+          excludeSongIds: [baseSong.id]
+        });
         setDeepSeaConnectedPersons(inspectData.connectedPersons || []);
 
         showToast(`🌊 심해 디깅 시작! 출발: ${baseSong.title}`, "info");
@@ -518,7 +722,10 @@ export default function DBDiggingPage() {
     setDeepSeaSelectedPerson(person);
     setIsDeepSeaLoading(true);
     try {
-      const data = await clientApi.inspectGraph({ personId: person.id });
+      const data = await clientApi.inspectGraph({
+        personId: person.id,
+        currentSongId: deepSeaCurrentSong?.id
+      });
       setDeepSeaConnectedSongs(data.connectedSongs || []);
     } catch (err) {
       console.error("[handleDeepSeaSelectPerson] Error:", err);
@@ -558,7 +765,10 @@ export default function DBDiggingPage() {
       } else {
         nextLives = deepSeaLives - 1;
         setDeepSeaLives(nextLives);
-        showToast("조건 불일치! 하트 1개 소모 💔", "error");
+        showToast(
+          data.fallbackReason ? `조건 불일치 (${data.fallbackReason})! 하트 소모 💔` : "조건 불일치! 하트 1개 소모 💔",
+          "error"
+        );
       }
 
       const historyEntry: DiveHistoryStep = {
@@ -597,7 +807,11 @@ export default function DBDiggingPage() {
         const updated = recordDeepSeaDive(nextDepth, getDiverTitle(nextDepth), playlist);
         setLatestStats(updated);
       } else {
-        const inspectData = await clientApi.inspectGraph({ songId: song.id });
+        const inspectData = await clientApi.inspectGraph({
+          songId: song.id,
+          currentSongArtist: song.artist,
+          excludeSongIds: nextExclude
+        });
         setDeepSeaConnectedPersons(inspectData.connectedPersons || []);
       }
     } catch (err: any) {
@@ -624,7 +838,7 @@ export default function DBDiggingPage() {
     setLatestStats(updated);
   };
 
-  // 모드 전환 핸들러 (연습 모드 클릭 시 세션 오염 없이 모달만 오픈)
+  // 모드 전환 핸들러
   const handleSelectGameMode = (mode: "daily" | "practice" | "deepsea") => {
     if (mode === "daily") {
       setGameMode("daily");
@@ -640,7 +854,7 @@ export default function DBDiggingPage() {
   };
 
   const turnCount = Math.max(0, historyStack.length - 1);
-  const canBacktrack = historyStack.length > 1;
+  const canBacktrack = historyStack.length > 1 || Boolean(selectedPerson);
 
   // 엔진 로딩 스크린
   if (!isEngineReady) {
@@ -691,10 +905,44 @@ export default function DBDiggingPage() {
         onOpenTutorial={() => setIsTutorialModalOpen(true)}
       />
 
-      {/* 2. 메인 컨텐츠 영역 (PC 2-Column & 모바일 반응형 뷰포트) */}
-      <main className="flex-1 max-w-7xl w-full mx-auto px-4 py-5">
+      {/* 2. 메인 컨텐츠 영역 (100% 전폭 HUD + PC 2-Column 레이아웃) */}
+      <main className="flex-1 max-w-7xl w-full mx-auto px-4 py-5 space-y-5">
         {/* ======================================================== */}
-        {/* [모드 2: 심해 디깅 화면]                                 */}
+        {/* [전폭 상단 HUD 상태바] (Zero-Truncation 보장)             */}
+        {/* ======================================================== */}
+        {gameMode === "deepsea" ? (
+          deepSeaCurrentSong && (
+            <div className="w-full">
+              <DeepSeaStatusBar
+                depth={deepSeaDepth}
+                lives={deepSeaLives}
+                currentMission={deepSeaMission}
+                currentSong={deepSeaCurrentSong}
+                onSurface={handleDeepSeaSurface}
+              />
+            </div>
+          )
+        ) : (
+          quest && currentSong && (
+            <div className="w-full">
+              <QuestStatusBar
+                startSong={quest.startSong}
+                targetSong={quest.targetSong}
+                turnCount={turnCount}
+                optimalTurns={quest.optimalTurns}
+                canBacktrack={canBacktrack}
+                onBacktrack={handleBacktrack}
+                onGiveUp={() => setIsGiveUpModalOpen(true)}
+                gameMode={gameMode}
+              />
+            </div>
+          )
+        )}
+
+        {/* ======================================================== */}
+        {/* [메인 2-Column 본문 영역]                                */}
+        {/* 좌측(5) : 실시간 시각화 맵 단독                           */}
+        {/* 우측(7) : CurrentSongCard 상단 + 2열 와이드 콘솔 하단     */}
         {/* ======================================================== */}
         {gameMode === "deepsea" ? (
           isDeepSeaLoading && !deepSeaCurrentSong ? (
@@ -704,33 +952,20 @@ export default function DBDiggingPage() {
             </div>
           ) : deepSeaCurrentSong ? (
             <div className="lg:grid lg:grid-cols-12 lg:gap-6 items-start">
-              {/* 좌측 패널 (lg: 5컬럼) - 상태바 + 수직 잠수 소나 맵 + 현재 곡 */}
+              {/* 좌측 패널 (lg: 5컬럼) - 실시간 심해 소나 맵 단독 */}
               <div className="lg:col-span-5 space-y-4">
-                <DeepSeaStatusBar
-                  depth={deepSeaDepth}
-                  lives={deepSeaLives}
-                  currentMission={deepSeaMission}
-                  currentSong={deepSeaCurrentSong}
-                  onSurface={handleDeepSeaSurface}
-                />
-
                 <DeepSeaSonarMap
                   diveHistory={deepSeaDiveHistory}
                   currentDepth={deepSeaDepth}
                   lives={deepSeaLives}
-                />
-
-                <CurrentSongCard
-                  currentSong={deepSeaCurrentSong}
-                  historyStack={deepSeaDiveHistory.map((d) => ({
-                    song: d.song,
-                    viaPerson: d.viaPerson
-                  }))}
+                  selectedPerson={deepSeaSelectedPerson}
                 />
               </div>
 
-              {/* 우측 패널 (lg: 7컬럼) - 심해 턴 콘솔 (역할 탭 + 8카드) */}
-              <div className="lg:col-span-7 mt-4 lg:mt-0">
+              {/* 우측 패널 (lg: 7컬럼) - 상단 CurrentSongCard + 하단 턴 조작 뷰 */}
+              <div className="lg:col-span-7 space-y-4 mt-4 lg:mt-0">
+                <CurrentSongCard currentSong={deepSeaCurrentSong} />
+
                 <DeepSeaTurnView
                   currentSong={deepSeaCurrentSong}
                   currentMission={deepSeaMission}
@@ -748,9 +983,7 @@ export default function DBDiggingPage() {
             </div>
           ) : null
         ) : (
-          /* ======================================================== */
-          /* [모드 1: 오늘의 디깅 & 자유 연습 모드 화면]               */
-          /* ======================================================== */
+          /* 모드 1: 오늘의 디깅 & 자유 연습 모드 */
           isQuestLoading || !quest || !currentSong ? (
             <div className="h-96 flex flex-col items-center justify-center gap-3 text-slate-400">
               <div className="w-10 h-10 border-2 border-indigo-500 border-t-transparent rounded-full animate-spin" />
@@ -758,31 +991,20 @@ export default function DBDiggingPage() {
             </div>
           ) : (
             <div className="lg:grid lg:grid-cols-12 lg:gap-6 items-start">
-              {/* 좌측 패널 (lg: 5컬럼) - 상태바 + 미지 탐험 트리 맵 + 현재 곡 */}
+              {/* 좌측 패널 (lg: 5컬럼) - 2-Mode 탐험 트리 맵 단독 */}
               <div className="lg:col-span-5 space-y-4">
-                <QuestStatusBar
-                  startSong={quest.startSong}
-                  targetSong={quest.targetSong}
-                  turnCount={turnCount}
-                  optimalTurns={quest.optimalTurns}
-                  canBacktrack={canBacktrack}
-                  onBacktrack={handleBacktrack}
-                  onGiveUp={() => setIsGiveUpModalOpen(true)}
-                  gameMode={gameMode}
-                />
-
                 <ExplorationTreeMap
                   tree={explorationTree}
                   currentNodeId={currentNodeId}
                   targetSong={quest.targetSong}
                   onSelectNode={handleSelectTreeNode}
                 />
-
-                <CurrentSongCard currentSong={currentSong} historyStack={historyStack} />
               </div>
 
-              {/* 우측 패널 (lg: 7컬럼) - 턴 조작 콘솔 */}
-              <div className="lg:col-span-7 mt-4 lg:mt-0">
+              {/* 우측 패널 (lg: 7컬럼) - 상단 CurrentSongCard + 하단 2열 와이드 콘솔 */}
+              <div className="lg:col-span-7 space-y-4 mt-4 lg:mt-0">
+                <CurrentSongCard currentSong={currentSong} />
+
                 {isHardcore ? (
                   <HardcoreInput currentSong={currentSong} onSelectSong={handleSelectSong} />
                 ) : (
@@ -847,7 +1069,7 @@ export default function DBDiggingPage() {
         onClose={() => setIsTutorialModalOpen(false)}
       />
 
-      {/* 모드 1 자유 연습 모드 런처 모달 */}
+      {/* 모드 1 자유 연습 모드 런처 모달 (4-Layer 커스텀 빌더) */}
       <PracticeLauncherModal
         isOpen={isPracticeModalOpen}
         onClose={() => setIsPracticeModalOpen(false)}

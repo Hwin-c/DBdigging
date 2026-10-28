@@ -328,9 +328,9 @@ export function TurnCardView({
           </div>
         ) : !selectedPerson ? (
           // ----------------------------------------------------
-          // (A) 인물/그룹 카드 그리드 (Step 1)
+          // (A) 인물/그룹 카드 그리드 (Step 1 - 2열 와이드 콘솔)
           // ----------------------------------------------------
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
             {pagedPersons.map((person) => {
               const isOptimal = (person as any).isOptimalNext === true;
 
@@ -338,7 +338,7 @@ export function TurnCardView({
                 <button
                   key={person.id}
                   onClick={() => handlePersonClick(person)}
-                  className={`group relative flex flex-col justify-between p-3.5 rounded-xl border text-left transition-all active:scale-95 ${
+                  className={`group relative flex flex-col justify-between p-4 rounded-xl border text-left transition-all active:scale-95 ${
                     isHintMode && isOptimal
                       ? "bg-amber-950/30 border-amber-400 shadow-[0_0_15px_rgba(245,158,11,0.25)] hover:border-amber-300"
                       : "bg-slate-950/60 border-slate-800 hover:border-indigo-500/60 hover:bg-slate-800/50 shadow-sm"
@@ -349,20 +349,20 @@ export function TurnCardView({
                       {isHintMode && isOptimal ? (
                         <OptimalHintBadge />
                       ) : (
-                        <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-slate-800 text-slate-400">
+                        <span className="text-[10px] font-bold px-2 py-0.5 rounded bg-slate-800 text-slate-400">
                           {person.isGroup ? "👥 그룹" : "👤 개인"}
                         </span>
                       )}
                     </div>
 
                     <div>
-                      <h4 className="text-sm font-bold text-white group-hover:text-indigo-300 transition-colors line-clamp-1">
+                      <h4 className="text-sm sm:text-base font-bold text-white group-hover:text-indigo-300 transition-colors break-words leading-snug line-clamp-2">
                         {person.name}
                       </h4>
                     </div>
                   </div>
 
-                  <div className="mt-3 pt-2 border-t border-slate-800/80">
+                  <div className="mt-3 pt-2.5 border-t border-slate-800/80">
                     <RoleBadgeList roles={person.roles ?? []} size="sm" />
                   </div>
                 </button>
@@ -371,9 +371,9 @@ export function TurnCardView({
           </div>
         ) : (
           // ----------------------------------------------------
-          // (B) 다음 곡 카드 그리드 (Step 2)
+          // (B) 다음 곡 카드 그리드 (Step 2 - 2열 와이드 콘솔)
           // ----------------------------------------------------
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
             {pagedSongs.map((song) => {
               const isOptimal = (song as any).isOptimalNext === true;
               const isVisited = visitedSet.has(song.id);
@@ -382,7 +382,7 @@ export function TurnCardView({
                 <button
                   key={song.id}
                   onClick={() => onSelectSong(song, selectedPerson)}
-                  className={`group relative flex flex-col justify-between p-3.5 rounded-xl border text-left transition-all active:scale-95 ${
+                  className={`group relative flex flex-col justify-between p-4 rounded-xl border text-left transition-all active:scale-95 ${
                     isHintMode && isOptimal
                       ? "bg-amber-950/30 border-amber-400 shadow-[0_0_15px_rgba(245,158,11,0.25)] hover:border-amber-300"
                       : isVisited
@@ -390,32 +390,34 @@ export function TurnCardView({
                       : "bg-slate-950/60 border-slate-800 hover:border-purple-500/60 hover:bg-slate-800/50 shadow-sm"
                   }`}
                 >
-                  <div className="space-y-1.5">
+                  <div className="space-y-2">
                     <div className="flex items-center justify-between gap-1 flex-wrap">
                       {isHintMode && isOptimal && <OptimalHintBadge />}
                       {song.isTitle && <TitleTrackBadge />}
                       {isVisited && (
-                        <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded bg-slate-800 text-slate-400 border border-slate-700">
+                        <span className="text-[10px] font-semibold px-2 py-0.5 rounded bg-slate-800 text-slate-400 border border-slate-700">
                           방문함
                         </span>
                       )}
                     </div>
 
                     <div>
-                      <h4 className="text-sm font-bold text-white group-hover:text-purple-300 transition-colors line-clamp-1">
+                      <h4 className="text-sm sm:text-base font-bold text-white group-hover:text-purple-300 transition-colors break-words leading-snug line-clamp-2">
                         {song.title}
                       </h4>
-                      <p className="text-xs text-slate-400 line-clamp-1 font-medium">{song.artist}</p>
+                      <p className="text-xs text-slate-400 break-words leading-snug line-clamp-2 font-medium mt-0.5">
+                        {song.artist}
+                      </p>
                     </div>
 
-                    <div className="flex items-center gap-1.5 text-[10px] text-slate-400 flex-wrap">
+                    <div className="flex items-center gap-1.5 text-[10px] text-slate-400 flex-wrap pt-1">
                       <span>{song.year}년</span>
                       <span>•</span>
                       <span>{song.genre || "가요"}</span>
                       {song.isViaGroupHop && (
                         <>
                           <span>•</span>
-                          <span className="text-indigo-400">그룹 징검다리</span>
+                          <span className="text-indigo-400 font-semibold">그룹 징검다리</span>
                         </>
                       )}
                     </div>
