@@ -1,0 +1,32 @@
+{
+  "build_timestamp_kst": "2026-10-28 22:01:37",
+  "architecture": "Firebase Hybrid (Method A: Static Graph Bundle + Firestore Daily Quests)",
+  "included_groups": [
+    "ㄱ",
+    "ㄴ",
+    "ㄷ",
+    "ㄹ",
+    "ㅁ",
+    "ㅂ",
+    "ㅅ",
+    "ㅇ",
+    "ㅊ",
+    "ㅋ",
+    "ㅌ",
+    "ㅍ"
+  ],
+  "included_groups_count": 12,
+  "total_clean_songs": 202394,
+  "giant_component_playable_songs": 194659,
+  "total_person_and_group_nodes": 65608,
+  "total_graph_edges": 620483,
+  "giant_component_coverage_percent": 96.77,
+  "pregenerated_daily_quests_count": 100,
+  "storage_optimization": {
+    "previous_jsonl_total_mb": 300.23,
+    "new_bundle_raw_mb": 33.72,
+    "new_bundle_gzip_transfer_mb": 6.38,
+    "daily_quests_seed_kb": 40.0,
+    "size_reduction_percent": 97.9
+  }
+}
