@@ -94,11 +94,12 @@ export const clientApi = {
   async inspectGraph(options: {
     songId?: string;
     personId?: string;
+    currentSongId?: string;
     targetSongId?: string;
     includeGroupHops?: boolean;
   }): Promise<InspectResult> {
     const { engine } = await ensureGraphLoaded();
-    const { songId, personId, targetSongId, includeGroupHops = true } = options;
+    const { songId, personId, currentSongId, targetSongId, includeGroupHops = true } = options;
 
     // 1. 곡 기준 인물 목록 조회
     if (songId) {
@@ -145,7 +146,14 @@ export const clientApi = {
         throw new Error(`Person not found: ${personId}`);
       }
 
-      const connectedSongs = [...engine.getConnectedSongs(personId, { includeGroupHops })];
+      let connectedSongs = [...engine.getConnectedSongs(personId, { includeGroupHops })];
+
+      // [버그 방지 1] 현재 위치 곡은 다음 곡 후보에서 완전히 제외
+      if (currentSongId) {
+        connectedSongs = connectedSongs.filter((s) => s.id !== currentSongId);
+      }
+
+      const connectedSongIdSet = new Set(connectedSongs.map((s) => s.id));
       let optimalNextId: string | null = null;
       let remainingTurns: number | null = null;
 
@@ -153,32 +161,43 @@ export const clientApi = {
       if (targetSongId) {
         const directTargetIdx = connectedSongs.findIndex((s) => s.id === targetSongId);
         if (directTargetIdx !== -1) {
+          // 목표 곡이 바로 참여곡에 존재하는 경우
           optimalNextId = targetSongId;
           remainingTurns = 1;
-          (connectedSongs[directTargetIdx] as any).isOptimalNext = true;
-          if (directTargetIdx > 0) {
-            const [opt] = connectedSongs.splice(directTargetIdx, 1);
-            connectedSongs.unshift(opt);
-          }
         } else {
-          let minTurns = Infinity;
-          let bestIdx = -1;
-
-          for (let i = 0; i < Math.min(connectedSongs.length, 30); i++) {
-            const candSong = connectedSongs[i];
-            const pRes = engine.findShortestPath(candSong.id, targetSongId);
-            if (pRes.found && pRes.turns < minTurns) {
-              minTurns = pRes.turns;
-              bestIdx = i;
-              optimalNextId = candSong.id;
-              remainingTurns = pRes.turns + 1;
+          // 경우 A: 만약 currentSongId 기준 최단 경로 상 첫 인물이 선택된 personId와 일치하는 경우
+          let foundViaShortestPath = false;
+          if (currentSongId) {
+            const spRes = engine.findShortestPath(currentSongId, targetSongId);
+            if (spRes.found && spRes.path.length >= 3 && spRes.path[1] === personId) {
+              // 1-hop 그룹 징검다리 대응: path.slice(2)에서 connectedSongIdSet에 속한 첫 번째 곡 찾기
+              const nextValidSongId = spRes.path.slice(2).find((id) => connectedSongIdSet.has(id));
+              if (nextValidSongId) {
+                optimalNextId = nextValidSongId;
+                remainingTurns = spRes.turns;
+                foundViaShortestPath = true;
+              }
             }
           }
 
-          if (bestIdx !== -1) {
-            (connectedSongs[bestIdx] as any).isOptimalNext = true;
-            if (bestIdx > 0) {
-              const [opt] = connectedSongs.splice(bestIdx, 1);
+          // 경우 B: 다른 인물을 골랐거나 최단 경로와 다른 브랜치인 경우
+          // 개별 루프 대신 engine.findClosestCandidateSong 단일 역방향 BFS 실행 (브라우저 프리징 0%)
+          if (!foundViaShortestPath) {
+            const closest = engine.findClosestCandidateSong(connectedSongIdSet, targetSongId);
+            if (closest) {
+              optimalNextId = closest.songId;
+              remainingTurns = closest.turns + 1;
+            }
+          }
+        }
+
+        // 최적 다음 곡 Index 0으로 Hoisting
+        if (optimalNextId) {
+          const matchIdx = connectedSongs.findIndex((s) => s.id === optimalNextId);
+          if (matchIdx !== -1) {
+            (connectedSongs[matchIdx] as any).isOptimalNext = true;
+            if (matchIdx > 0) {
+              const [opt] = connectedSongs.splice(matchIdx, 1);
               connectedSongs.unshift(opt);
             }
           }

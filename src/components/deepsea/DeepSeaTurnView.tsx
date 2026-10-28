@@ -1,9 +1,11 @@
 "use client";
 
-import React, { useState, useMemo } from "react";
-import { ConnectedPerson, ConnectedSong, DeepSeaMission, SongInfo } from "@/lib/graph/types";
+import React, { useState, useMemo, useEffect } from "react";
+import { ConnectedPerson, ConnectedSong, DeepSeaMission, SongInfo, RoleCode } from "@/lib/graph/types";
 import { RoleBadgeList, OptimalHintBadge, TitleTrackBadge } from "@/components/common/Badge";
-import { Undo2, ChevronLeft, ChevronRight, Search, Heart, EyeOff, Sparkles, CheckCircle2 } from "lucide-react";
+import { Undo2, ChevronLeft, ChevronRight, Search, Heart, EyeOff } from "lucide-react";
+
+export type RoleFilter = "all" | 1 | 3 | 4 | 5 | "group";
 
 interface DeepSeaTurnViewProps {
   currentSong: SongInfo;
@@ -35,42 +37,77 @@ export function DeepSeaTurnView({
   visitedSongIds = []
 }: DeepSeaTurnViewProps) {
   const [filterQuery, setFilterQuery] = useState("");
+  const [activeRoleFilter, setActiveRoleFilter] = useState<RoleFilter>("all");
   const [currentPage, setCurrentPage] = useState(1);
 
   const visitedSet = useMemo(() => new Set(visitedSongIds), [visitedSongIds]);
 
-  // 1. 인물/곡 목록 필터링 및 힌트 모드 Hoisting
+  // 턴 전환 또는 Step 전환(인물 선택/취소) 시 활성 탭을 [전체]로 자동 리셋 (Index 0 힌트 가림 방지)
+  useEffect(() => {
+    setActiveRoleFilter("all");
+    setFilterQuery("");
+    setCurrentPage(1);
+  }, [selectedPerson, currentSong.id]);
+
+  // 현재 Step 후보군 전체 기준 각 역할별 카운트 계산
+  const roleCounts = useMemo(() => {
+    const rawItems = !selectedPerson ? connectedPersons : connectedSongs;
+    const counts = {
+      all: rawItems.length,
+      artist: 0,
+      lyricist: 0,
+      composer: 0,
+      arranger: 0,
+      group: 0
+    };
+
+    for (const item of rawItems) {
+      const roles = (item as any).roles || [];
+      if (roles.includes(1)) counts.artist++;
+      if (roles.includes(3)) counts.lyricist++;
+      if (roles.includes(4)) counts.composer++;
+      if (roles.includes(5)) counts.arranger++;
+      if (roles.includes(2) || roles.includes(6)) counts.group++;
+    }
+
+    return counts;
+  }, [selectedPerson, connectedPersons, connectedSongs]);
+
+  // 역할 탭 필터 및 힌트 모드 Hoisting 적용
   const processedItems = useMemo(() => {
-    const q = filterQuery.trim().toLowerCase();
+    let list: (ConnectedPerson | ConnectedSong)[] = !selectedPerson ? [...connectedPersons] : [...connectedSongs];
 
-    if (!selectedPerson) {
-      // Step 1: 인물 목록
-      let list = [...connectedPersons];
-      if (q) {
-        list = list.filter((p) => p.name.toLowerCase().includes(q));
+    // 1. 역할 필터
+    if (activeRoleFilter !== "all") {
+      if (activeRoleFilter === "group") {
+        list = list.filter((it: any) => it.roles?.includes(2) || it.roles?.includes(6));
+      } else {
+        list = list.filter((it: any) => it.roles?.includes(activeRoleFilter));
       }
+    }
 
-      // 힌트 모드 Hoisting: 정답 징검다리 인물(validBridgePersonIds)을 최상단으로 정렬
-      if (isHintMode && currentMission) {
+    // 2. 검색어 필터
+    const q = filterQuery.trim().toLowerCase();
+    if (q) {
+      if (!selectedPerson) {
+        list = (list as ConnectedPerson[]).filter((p) => p.name.toLowerCase().includes(q));
+      } else {
+        list = (list as ConnectedSong[]).filter(
+          (s) => s.title.toLowerCase().includes(q) || s.artist.toLowerCase().includes(q)
+        );
+      }
+    }
+
+    // 3. 힌트 모드 Hoisting
+    if (isHintMode && currentMission) {
+      if (!selectedPerson) {
         const bridgeSet = new Set(currentMission.validBridgePersonIds);
         list.sort((a, b) => {
           const aOpt = bridgeSet.has(a.id) ? 1 : 0;
           const bOpt = bridgeSet.has(b.id) ? 1 : 0;
           return bOpt - aOpt;
         });
-      }
-      return list;
-    } else {
-      // Step 2: 곡 목록
-      let list = [...connectedSongs];
-      if (q) {
-        list = list.filter(
-          (s) => s.title.toLowerCase().includes(q) || s.artist.toLowerCase().includes(q)
-        );
-      }
-
-      // 힌트 모드 Hoisting: 정답 곡(validTargetSongIds)을 최상단으로 정렬
-      if (isHintMode && currentMission) {
+      } else {
         const targetSet = new Set(currentMission.validTargetSongIds);
         list.sort((a, b) => {
           const aOpt = targetSet.has(a.id) ? 1 : 0;
@@ -78,9 +115,10 @@ export function DeepSeaTurnView({
           return bOpt - aOpt;
         });
       }
-      return list;
     }
-  }, [filterQuery, selectedPerson, connectedPersons, connectedSongs, isHintMode, currentMission]);
+
+    return list;
+  }, [activeRoleFilter, filterQuery, selectedPerson, connectedPersons, connectedSongs, isHintMode, currentMission]);
 
   // 페이지네이션 계산
   const totalPages = Math.max(1, Math.ceil(processedItems.length / ITEMS_PER_PAGE));
@@ -93,13 +131,21 @@ export function DeepSeaTurnView({
     setCurrentPage(1);
   };
 
+  const handleRoleTabClick = (filter: RoleFilter, count: number) => {
+    if (count === 0 && filter !== "all") return;
+    setActiveRoleFilter(filter);
+    setCurrentPage(1);
+  };
+
   const handleCancelPerson = () => {
+    setActiveRoleFilter("all");
     setFilterQuery("");
     setCurrentPage(1);
     onCancelPersonSelection();
   };
 
   const handlePersonClick = (p: ConnectedPerson) => {
+    setActiveRoleFilter("all");
     setFilterQuery("");
     setCurrentPage(1);
     onSelectPerson(p);
@@ -108,74 +154,156 @@ export function DeepSeaTurnView({
   return (
     <div className="w-full bg-[#0a1424]/90 border border-cyan-500/30 rounded-2xl p-4 sm:p-5 backdrop-blur-md shadow-2xl">
       {/* 1. 상단 고정 조작 컨트롤 바 */}
-      <div className="sticky top-0 z-20 pb-4 mb-4 border-b border-cyan-900/40 bg-[#0a1424]/95 backdrop-blur-md -mx-4 -mt-4 p-4 rounded-t-2xl flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3">
-        {/* Left: Step indicator & Back to Person button */}
-        <div className="flex items-center gap-2">
-          {selectedPerson ? (
-            <button
-              onClick={handleCancelPerson}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-white text-xs font-bold border border-slate-700 active:scale-95 transition-all shadow-sm shrink-0"
-              title="인물 다시 선택하기"
-            >
-              <Undo2 className="w-3.5 h-3.5 text-cyan-400" />
-              <span>↩️ 인물 다시 선택</span>
-            </button>
-          ) : (
-            <div className="flex items-center gap-2">
-              <div className="w-7 h-7 rounded-lg bg-cyan-500/20 text-cyan-300 flex items-center justify-center font-bold text-xs border border-cyan-500/40">
-                1
+      <div className="sticky top-0 z-20 pb-3 mb-3 border-b border-cyan-900/40 bg-[#0a1424]/95 backdrop-blur-md -mx-4 -mt-4 p-4 rounded-t-2xl flex flex-col gap-3">
+        <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3">
+          {/* Left: Step indicator & Back to Person button */}
+          <div className="flex items-center gap-2">
+            {selectedPerson ? (
+              <button
+                onClick={handleCancelPerson}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-white text-xs font-bold border border-slate-700 active:scale-95 transition-all shadow-sm shrink-0"
+                title="인물 다시 선택하기"
+              >
+                <Undo2 className="w-3.5 h-3.5 text-cyan-400" />
+                <span>↩️ 인물 다시 선택</span>
+              </button>
+            ) : (
+              <div className="flex items-center gap-2">
+                <div className="w-7 h-7 rounded-lg bg-cyan-500/20 text-cyan-300 flex items-center justify-center font-bold text-xs border border-cyan-500/40">
+                  1
+                </div>
+                <span className="text-xs sm:text-sm font-bold text-white">
+                  Step 1: 징검다리 인물/그룹 선택
+                </span>
               </div>
-              <span className="text-xs sm:text-sm font-bold text-white">
-                Step 1: 징검다리 인물/그룹 선택
-              </span>
-            </div>
-          )}
+            )}
 
-          {selectedPerson && (
-            <div className="flex items-center gap-1.5 text-xs font-semibold text-cyan-200 bg-cyan-950/60 border border-cyan-500/40 px-2.5 py-1 rounded-lg">
-              <span className="text-cyan-400 font-bold">2단계:</span>
-              <span className="text-white font-bold">{selectedPerson.name}</span>
-              <span className="text-slate-400 text-[11px]">의 곡으로 다이빙</span>
+            {selectedPerson && (
+              <div className="flex items-center gap-1.5 text-xs font-semibold text-cyan-200 bg-cyan-950/60 border border-cyan-500/40 px-2.5 py-1 rounded-lg">
+                <span className="text-cyan-400 font-bold">Step 2:</span>
+                <span className="text-white font-bold">{selectedPerson.name}</span>
+                <span className="text-slate-400 text-[11px]">의 곡으로 다이빙</span>
+              </div>
+            )}
+          </div>
+
+          {/* Right: Inline Search Filter & Pagination */}
+          <div className="flex items-center gap-2 justify-between sm:justify-end">
+            <div className="relative flex-1 sm:w-44 md:w-52">
+              <Search className="w-3.5 h-3.5 text-cyan-400/60 absolute left-2.5 top-1/2 -translate-y-1/2" />
+              <input
+                type="text"
+                value={filterQuery}
+                onChange={handleFilterChange}
+                placeholder={selectedPerson ? "곡명/가수 검색..." : "인물명 검색..."}
+                className="w-full bg-[#08101e]/90 border border-cyan-800/60 rounded-xl pl-8 pr-3 py-1.5 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-cyan-400 transition-colors"
+              />
             </div>
-          )}
+
+            {/* Pagination Controls */}
+            <div className="flex items-center gap-1 bg-[#08101e]/90 border border-cyan-900/60 rounded-xl px-2 py-1 shrink-0">
+              <button
+                onClick={() => setCurrentPage((p) => Math.max(1, p - 1))}
+                disabled={safePage <= 1}
+                className="p-1 rounded text-slate-400 hover:text-white disabled:text-slate-700 disabled:cursor-not-allowed transition-colors"
+                title="이전 페이지"
+              >
+                <ChevronLeft className="w-4 h-4" />
+              </button>
+              <span className="text-xs font-semibold px-1 text-cyan-300">
+                {safePage} / {totalPages}
+              </span>
+              <button
+                onClick={() => setCurrentPage((p) => Math.min(totalPages, p + 1))}
+                disabled={safePage >= totalPages}
+                className="p-1 rounded text-slate-400 hover:text-white disabled:text-slate-700 disabled:cursor-not-allowed transition-colors"
+                title="다음 페이지"
+              >
+                <ChevronRight className="w-4 h-4" />
+              </button>
+            </div>
+          </div>
         </div>
 
-        {/* Right: Inline Search Filter & Pagination */}
-        <div className="flex items-center gap-2 justify-between sm:justify-end">
-          {/* Inline Filter Input */}
-          <div className="relative flex-1 sm:w-48 md:w-56">
-            <Search className="w-3.5 h-3.5 text-slate-400 absolute left-2.5 top-1/2 -translate-y-1/2" />
-            <input
-              type="text"
-              value={filterQuery}
-              onChange={handleFilterChange}
-              placeholder={selectedPerson ? "곡명/가수 검색..." : "인물명 검색..."}
-              className="w-full bg-slate-950/80 border border-slate-700/80 rounded-xl pl-8 pr-3 py-1.5 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-cyan-500 transition-colors"
-            />
-          </div>
-
-          {/* Pagination Controls */}
-          <div className="flex items-center gap-1 bg-slate-950/80 border border-slate-800 rounded-xl px-2 py-1 shrink-0">
-            <button
-              onClick={() => setCurrentPage((p) => Math.max(1, p - 1))}
-              disabled={safePage <= 1}
-              className="p-1 rounded text-slate-400 hover:text-white disabled:text-slate-700 disabled:cursor-not-allowed transition-colors"
-              title="이전 페이지"
-            >
-              <ChevronLeft className="w-4 h-4" />
-            </button>
-            <span className="text-xs font-semibold px-1 text-slate-300">
-              {safePage} / {totalPages}
-            </span>
-            <button
-              onClick={() => setCurrentPage((p) => Math.min(totalPages, p + 1))}
-              disabled={safePage >= totalPages}
-              className="p-1 rounded text-slate-400 hover:text-white disabled:text-slate-700 disabled:cursor-not-allowed transition-colors"
-              title="다음 페이지"
-            >
-              <ChevronRight className="w-4 h-4" />
-            </button>
-          </div>
+        {/* ======================================================== */}
+        {/* 6대 크레딧 역할 필터 탭 바 (DeepSea Cyan Theme)            */}
+        {/* ======================================================== */}
+        <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar pt-1">
+          <button
+            onClick={() => handleRoleTabClick("all", roleCounts.all)}
+            className={`px-2.5 py-1 rounded-lg text-xs font-semibold transition-all shrink-0 ${
+              activeRoleFilter === "all"
+                ? "bg-cyan-600 text-white shadow-[0_0_10px_rgba(6,182,212,0.5)]"
+                : "bg-slate-950/70 text-slate-400 hover:text-slate-200 border border-slate-800"
+            }`}
+          >
+            전체 ({roleCounts.all})
+          </button>
+          <button
+            onClick={() => handleRoleTabClick(1, roleCounts.artist)}
+            disabled={roleCounts.artist === 0}
+            className={`px-2.5 py-1 rounded-lg text-xs font-semibold transition-all shrink-0 ${
+              activeRoleFilter === 1
+                ? "bg-purple-600 text-white shadow-[0_0_10px_rgba(168,85,247,0.4)]"
+                : roleCounts.artist === 0
+                ? "bg-slate-950/40 text-slate-600 border border-slate-900 cursor-not-allowed"
+                : "bg-slate-950/70 text-slate-400 hover:text-slate-200 border border-slate-800"
+            }`}
+          >
+            🎤 가창 ({roleCounts.artist})
+          </button>
+          <button
+            onClick={() => handleRoleTabClick(3, roleCounts.lyricist)}
+            disabled={roleCounts.lyricist === 0}
+            className={`px-2.5 py-1 rounded-lg text-xs font-semibold transition-all shrink-0 ${
+              activeRoleFilter === 3
+                ? "bg-emerald-600 text-white shadow-[0_0_10px_rgba(16,185,129,0.4)]"
+                : roleCounts.lyricist === 0
+                ? "bg-slate-950/40 text-slate-600 border border-slate-900 cursor-not-allowed"
+                : "bg-slate-950/70 text-slate-400 hover:text-slate-200 border border-slate-800"
+            }`}
+          >
+            ✍️ 작사 ({roleCounts.lyricist})
+          </button>
+          <button
+            onClick={() => handleRoleTabClick(4, roleCounts.composer)}
+            disabled={roleCounts.composer === 0}
+            className={`px-2.5 py-1 rounded-lg text-xs font-semibold transition-all shrink-0 ${
+              activeRoleFilter === 4
+                ? "bg-sky-600 text-white shadow-[0_0_10px_rgba(14,165,233,0.4)]"
+                : roleCounts.composer === 0
+                ? "bg-slate-950/40 text-slate-600 border border-slate-900 cursor-not-allowed"
+                : "bg-slate-950/70 text-slate-400 hover:text-slate-200 border border-slate-800"
+            }`}
+          >
+            🎼 작곡 ({roleCounts.composer})
+          </button>
+          <button
+            onClick={() => handleRoleTabClick(5, roleCounts.arranger)}
+            disabled={roleCounts.arranger === 0}
+            className={`px-2.5 py-1 rounded-lg text-xs font-semibold transition-all shrink-0 ${
+              activeRoleFilter === 5
+                ? "bg-amber-600 text-white shadow-[0_0_10px_rgba(245,158,11,0.4)]"
+                : roleCounts.arranger === 0
+                ? "bg-slate-950/40 text-slate-600 border border-slate-900 cursor-not-allowed"
+                : "bg-slate-950/70 text-slate-400 hover:text-slate-200 border border-slate-800"
+            }`}
+          >
+            🎹 편곡 ({roleCounts.arranger})
+          </button>
+          <button
+            onClick={() => handleRoleTabClick("group", roleCounts.group)}
+            disabled={roleCounts.group === 0}
+            className={`px-2.5 py-1 rounded-lg text-xs font-semibold transition-all shrink-0 ${
+              activeRoleFilter === "group"
+                ? "bg-pink-600 text-white shadow-[0_0_10px_rgba(236,72,153,0.4)]"
+                : roleCounts.group === 0
+                ? "bg-slate-950/40 text-slate-600 border border-slate-900 cursor-not-allowed"
+                : "bg-slate-950/70 text-slate-400 hover:text-slate-200 border border-slate-800"
+            }`}
+          >
+            👥 그룹/피처링 ({roleCounts.group})
+          </button>
         </div>
       </div>
 
@@ -184,17 +312,15 @@ export function DeepSeaTurnView({
         {isLoading ? (
           <div className="h-72 flex flex-col items-center justify-center gap-3 text-cyan-400">
             <div className="w-8 h-8 border-2 border-cyan-500 border-t-transparent rounded-full animate-spin" />
-            <p className="text-xs font-medium">심해 연결고리 탐색 중...</p>
+            <p className="text-xs font-medium">심해 음향 탐색 중...</p>
           </div>
         ) : pagedItems.length === 0 ? (
           <div className="h-72 flex flex-col items-center justify-center gap-2 text-slate-500">
-            <p className="text-sm font-semibold">검색 조건과 일치하는 항목이 없습니다.</p>
-            <p className="text-xs text-slate-600">검색어를 지우거나 변경해 보세요.</p>
+            <p className="text-sm font-semibold">선택한 역할이나 검색어와 일치하는 항목이 없습니다.</p>
+            <p className="text-xs text-slate-600">[전체] 탭을 누르거나 검색어를 지워보세요.</p>
           </div>
         ) : !selectedPerson ? (
-          // ----------------------------------------------------
           // (A) 인물/그룹 카드 그리드 (Step 1)
-          // ----------------------------------------------------
           <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
             {(pagedItems as ConnectedPerson[]).map((person) => {
               const isOptimal =
@@ -238,9 +364,7 @@ export function DeepSeaTurnView({
             })}
           </div>
         ) : (
-          // ----------------------------------------------------
           // (B) 다음 곡 카드 그리드 (Step 2 - 스포일러 블라인드 적용)
-          // ----------------------------------------------------
           <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
             {(pagedItems as ConnectedSong[]).map((song) => {
               const isAlreadyVisited = visitedSet.has(song.id);
@@ -249,13 +373,9 @@ export function DeepSeaTurnView({
                 currentMission &&
                 currentMission.validTargetSongIds.includes(song.id);
 
-              // ========================================================
-              // 스포일러 블라인드 마스킹 연출
-              // ========================================================
               const isYearCondition = currentMission?.condition === "same_year";
               const isAgencyCondition = currentMission?.condition === "same_agency";
 
-              // 힌트 모드가 꺼져있으면 미션 관련 메타데이터를 블라인드 마스킹
               const displayYear = !isHintMode && isYearCondition ? "????년" : `${song.year}년`;
               const isYearMasked = !isHintMode && isYearCondition;
 
@@ -274,12 +394,11 @@ export function DeepSeaTurnView({
                     isAlreadyVisited
                       ? "opacity-40 bg-slate-950/40 border-slate-900 cursor-not-allowed"
                       : isOptimal
-                        ? "bg-amber-950/30 border-amber-400 shadow-[0_0_15px_rgba(245,158,11,0.3)] hover:border-amber-300"
-                        : "bg-slate-950/60 border-slate-800 hover:border-cyan-500/60 hover:bg-slate-800/50 shadow-sm"
+                      ? "bg-amber-950/30 border-amber-400 shadow-[0_0_15px_rgba(245,158,11,0.3)] hover:border-amber-300"
+                      : "bg-slate-950/60 border-slate-800 hover:border-cyan-500/60 hover:bg-slate-800/50 shadow-sm"
                   }`}
                 >
                   <div className="space-y-1.5">
-                    {/* Top Row: Hint badge / Title / Visited tag */}
                     <div className="flex items-center justify-between gap-1 flex-wrap">
                       {isAlreadyVisited ? (
                         <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-slate-800 text-slate-500">
@@ -291,7 +410,6 @@ export function DeepSeaTurnView({
                       {song.isTitle && <TitleTrackBadge />}
                     </div>
 
-                    {/* Song Title & Artist */}
                     <div>
                       <h4 className="text-sm font-bold text-white group-hover:text-cyan-300 transition-colors line-clamp-1">
                         {song.title}
@@ -299,7 +417,6 @@ export function DeepSeaTurnView({
                       <p className="text-xs text-slate-400 line-clamp-1 font-medium">{song.artist}</p>
                     </div>
 
-                    {/* Metadata tags with Spoiler Blind Masking */}
                     <div className="flex items-center gap-1.5 text-[10px] text-slate-400 flex-wrap">
                       <span
                         className={
@@ -325,7 +442,6 @@ export function DeepSeaTurnView({
                     </div>
                   </div>
 
-                  {/* Bottom: Likes & Roles */}
                   <div className="mt-3 pt-2 border-t border-slate-800/80 flex items-center justify-between">
                     <RoleBadgeList roles={song.roles ?? []} size="sm" />
                     <span className="text-[10px] text-rose-400/80 flex items-center gap-0.5">

@@ -11,6 +11,7 @@ interface QuestStatusBarProps {
   optimalTurns: number;
   canBacktrack: boolean;
   onBacktrack: () => void;
+  onGiveUp?: () => void;
   gameMode?: "daily" | "practice";
 }
 
@@ -21,6 +22,7 @@ export function QuestStatusBar({
   optimalTurns,
   canBacktrack,
   onBacktrack,
+  onGiveUp,
   gameMode = "daily"
 }: QuestStatusBarProps) {
   // 턴 평가 상태 계산
@@ -89,20 +91,32 @@ export function QuestStatusBar({
             </div>
           </div>
 
-          {/* Backtrack button */}
-          <button
-            onClick={onBacktrack}
-            disabled={!canBacktrack}
-            className={`flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-semibold border transition-all active:scale-95 ${
-              canBacktrack
-                ? "bg-slate-800/90 text-slate-200 border-slate-700 hover:bg-slate-700/80 hover:text-white hover:border-slate-600 shadow-sm"
-                : "bg-slate-900/40 text-slate-600 border-slate-800/60 cursor-not-allowed"
-            }`}
-            title={canBacktrack ? "직전 곡으로 되돌아가기" : "출발 곡에서는 되돌아갈 수 없습니다"}
-          >
-            <Undo2 className="w-3.5 h-3.5" />
-            <span>이전 곡 되돌아가기</span>
-          </button>
+          {/* Action buttons: Backtrack & Give Up */}
+          <div className="flex items-center gap-2">
+            <button
+              onClick={onBacktrack}
+              disabled={!canBacktrack}
+              className={`flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-semibold border transition-all active:scale-95 ${
+                canBacktrack
+                  ? "bg-slate-800/90 text-slate-200 border-slate-700 hover:bg-slate-700/80 hover:text-white hover:border-slate-600 shadow-sm"
+                  : "bg-slate-900/40 text-slate-600 border-slate-800/60 cursor-not-allowed"
+              }`}
+              title={canBacktrack ? "직전 곡으로 되돌아가기" : "출발 곡에서는 되돌아갈 수 없습니다"}
+            >
+              <Undo2 className="w-3.5 h-3.5" />
+              <span>되돌아가기</span>
+            </button>
+
+            {onGiveUp && (
+              <button
+                onClick={onGiveUp}
+                className="flex items-center gap-1 px-2.5 py-2 rounded-xl text-xs font-semibold bg-rose-950/40 hover:bg-rose-900/60 text-rose-300 border border-rose-500/30 hover:border-rose-500/60 transition-all shadow-sm active:scale-95 shrink-0"
+                title="포기하고 정답 경로 확인하기"
+              >
+                <span>🏳️ 정답</span>
+              </button>
+            )}
+          </div>
         </div>
       </div>
     </div>

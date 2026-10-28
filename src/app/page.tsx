@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useEffect, useCallback } from "react";
+import React, { useState, useEffect, useCallback, useMemo } from "react";
 import {
   ConnectedPerson,
   ConnectedSong,
@@ -18,9 +18,13 @@ import { TurnCardView } from "@/components/game/TurnCardView";
 import { HardcoreInput } from "@/components/game/HardcoreInput";
 import { ClearModal } from "@/components/game/ClearModal";
 import { PracticeLauncherModal } from "@/components/game/PracticeLauncherModal";
+import { ExplorationTreeMap, ExplorationNode } from "@/components/game/ExplorationTreeMap";
 import { DeepSeaStatusBar } from "@/components/deepsea/DeepSeaStatusBar";
+import { DeepSeaSonarMap } from "@/components/deepsea/DeepSeaSonarMap";
 import { DeepSeaTurnView } from "@/components/deepsea/DeepSeaTurnView";
 import { DeepSeaResultModal, DiveHistoryStep } from "@/components/deepsea/DeepSeaResultModal";
+import { GiveUpModal } from "@/components/game/GiveUpModal";
+import { TutorialModal } from "@/components/common/TutorialModal";
 import { StatsModal } from "@/components/common/StatsModal";
 import {
   recordDailyAttempt,
@@ -52,14 +56,45 @@ export default function DBDiggingPage() {
   const [engineLoadText, setEngineLoadText] = useState<string>("K-Pop 크레딧 네트워크 연결 중...");
 
   // ====================================================
-  // [모드 1 상태 머신: 오늘의 디깅 & 자유 연습]
+  // [모드 1-A: 오늘의 디깅 세션 상태 (완전 격리)]
   // ====================================================
-  const [quest, setQuest] = useState<QuestPayload | null>(null);
-  const [currentSong, setCurrentSong] = useState<SongInfo | null>(null);
-  const [historyStack, setHistoryStack] = useState<HistoryStep[]>([]);
-  const [selectedPerson, setSelectedPerson] = useState<ConnectedPerson | null>(null);
-  const [connectedPersons, setConnectedPersons] = useState<ConnectedPerson[]>([]);
-  const [connectedSongs, setConnectedSongs] = useState<ConnectedSong[]>([]);
+  const [dailyQuest, setDailyQuest] = useState<QuestPayload | null>(null);
+  const [dailyCurrentSong, setDailyCurrentSong] = useState<SongInfo | null>(null);
+  const [dailyHistoryStack, setDailyHistoryStack] = useState<HistoryStep[]>([]);
+  const [dailyTree, setDailyTree] = useState<ExplorationNode[]>([]);
+  const [dailyCurrentNodeId, setDailyCurrentNodeId] = useState<string>("");
+  const [dailySelectedPerson, setDailySelectedPerson] = useState<ConnectedPerson | null>(null);
+  const [dailyConnectedPersons, setDailyConnectedPersons] = useState<ConnectedPerson[]>([]);
+  const [dailyConnectedSongs, setDailyConnectedSongs] = useState<ConnectedSong[]>([]);
+
+  // ====================================================
+  // [모드 1-B: 자유 연습 세션 상태 (완전 격리)]
+  // ====================================================
+  const [practiceQuest, setPracticeQuest] = useState<QuestPayload | null>(null);
+  const [practiceCurrentSong, setPracticeCurrentSong] = useState<SongInfo | null>(null);
+  const [practiceHistoryStack, setPracticeHistoryStack] = useState<HistoryStep[]>([]);
+  const [practiceTree, setPracticeTree] = useState<ExplorationNode[]>([]);
+  const [practiceCurrentNodeId, setPracticeCurrentNodeId] = useState<string>("");
+  const [practiceSelectedPerson, setPracticeSelectedPerson] = useState<ConnectedPerson | null>(null);
+  const [practiceConnectedPersons, setPracticeConnectedPersons] = useState<ConnectedPerson[]>([]);
+  const [practiceConnectedSongs, setPracticeConnectedSongs] = useState<ConnectedSong[]>([]);
+
+  // ====================================================
+  // [활성 세션 매핑 파생 변수]
+  // ====================================================
+  const isPractice = gameMode === "practice";
+  const quest = isPractice ? practiceQuest : dailyQuest;
+  const currentSong = isPractice ? practiceCurrentSong : dailyCurrentSong;
+  const historyStack = isPractice ? practiceHistoryStack : dailyHistoryStack;
+  const explorationTree = isPractice ? practiceTree : dailyTree;
+  const currentNodeId = isPractice ? practiceCurrentNodeId : dailyCurrentNodeId;
+  const selectedPerson = isPractice ? practiceSelectedPerson : dailySelectedPerson;
+  const connectedPersons = isPractice ? practiceConnectedPersons : dailyConnectedPersons;
+  const connectedSongs = isPractice ? practiceConnectedSongs : dailyConnectedSongs;
+
+  const visitedSongIds = useMemo(() => {
+    return historyStack.map((h) => h.song.id);
+  }, [historyStack]);
 
   // 모드 1 UI 토글
   const [isHintMode, setIsHintMode] = useState<boolean>(false);
@@ -68,6 +103,8 @@ export default function DBDiggingPage() {
   const [isGraphLoading, setIsGraphLoading] = useState<boolean>(false);
   const [isClearModalOpen, setIsClearModalOpen] = useState<boolean>(false);
   const [isPracticeModalOpen, setIsPracticeModalOpen] = useState<boolean>(false);
+  const [isGiveUpModalOpen, setIsGiveUpModalOpen] = useState<boolean>(false);
+  const [isTutorialModalOpen, setIsTutorialModalOpen] = useState<boolean>(false);
 
   // ====================================================
   // [모드 2 상태 머신: 심해 디깅 서바이벌]
@@ -87,7 +124,7 @@ export default function DBDiggingPage() {
   const [statsModalInitialTab, setStatsModalInitialTab] = useState<"daily" | "deepsea" | "backup">("daily");
   const [latestStats, setLatestStats] = useState<UserStatsPayload | null>(null);
 
-  // 모드별 전적 모달 오픈 핸들러 (최신 전적 갱신 및 탭 포커싱)
+  // 모드별 전적 모달 오픈 핸들러
   const handleOpenStats = useCallback((tab?: "daily" | "deepsea" | "backup") => {
     setStatsModalInitialTab(tab || (gameMode === "deepsea" ? "deepsea" : "daily"));
     setIsStatsModalOpen(true);
@@ -101,17 +138,30 @@ export default function DBDiggingPage() {
   }, []);
 
   // ----------------------------------------------------
-  // [모드 1] 데일리 퀘스트 로드
+  // [모드 1] 데일리 퀘스트 로드 & 초기 탐험 트리 생성
   // ----------------------------------------------------
   const loadDailyQuest = useCallback(async () => {
     setIsQuestLoading(true);
     try {
       const data: QuestPayload = await clientApi.getDailyQuest();
-      setQuest(data);
-      setCurrentSong(data.startSong);
-      setHistoryStack([{ song: data.startSong }]);
-      setSelectedPerson(null);
-      setConnectedSongs([]);
+      const rootNodeId = `node_${data.startSong.id}_0_${Date.now()}`;
+      const rootNode: ExplorationNode = {
+        nodeId: rootNodeId,
+        songId: data.startSong.id,
+        song: data.startSong,
+        depth: 0,
+        childrenNodeIds: [],
+        isCurrent: true,
+        isStart: true
+      };
+
+      setDailyQuest(data);
+      setDailyCurrentSong(data.startSong);
+      setDailyHistoryStack([{ song: data.startSong }]);
+      setDailyTree([rootNode]);
+      setDailyCurrentNodeId(rootNodeId);
+      setDailySelectedPerson(null);
+      setDailyConnectedSongs([]);
       setIsClearModalOpen(false);
       setGameMode("daily");
     } catch (err: any) {
@@ -123,7 +173,7 @@ export default function DBDiggingPage() {
   }, [showToast]);
 
   // ----------------------------------------------------
-  // [초기화] 인메모리 그래프 번들 & 시드 비동기 다운로드 및 인덱싱
+  // [초기화] 인메모리 그래프 번들 로드 & 튜토리얼 1회 팝업
   // ----------------------------------------------------
   useEffect(() => {
     let mounted = true;
@@ -134,6 +184,14 @@ export default function DBDiggingPage() {
         if (mounted) {
           setIsEngineReady(true);
           loadDailyQuest();
+
+          // 최초 방문자 튜토리얼 자동 노출 검사
+          if (typeof window !== "undefined") {
+            const tutorialSeen = localStorage.getItem("dbdigging_tutorial_seen");
+            if (!tutorialSeen) {
+              setIsTutorialModalOpen(true);
+            }
+          }
         }
       } catch (err) {
         console.error("[initEngine] Error:", err);
@@ -156,7 +214,11 @@ export default function DBDiggingPage() {
           songId,
           targetSongId: isHintMode && quest ? quest.targetSong.id : undefined
         });
-        setConnectedPersons(data.connectedPersons || []);
+        if (isPractice) {
+          setPracticeConnectedPersons(data.connectedPersons || []);
+        } else {
+          setDailyConnectedPersons(data.connectedPersons || []);
+        }
       } catch (err) {
         console.error("[fetchConnectedPersons] Error:", err);
         showToast("인물 목록을 불러오지 못했습니다.", "error");
@@ -164,7 +226,7 @@ export default function DBDiggingPage() {
         setIsGraphLoading(false);
       }
     },
-    [isHintMode, quest, showToast]
+    [isHintMode, quest, isPractice, showToast]
   );
 
   useEffect(() => {
@@ -173,16 +235,27 @@ export default function DBDiggingPage() {
     }
   }, [isEngineReady, gameMode, currentSong, selectedPerson, isHintMode, isHardcore, fetchConnectedPersons]);
 
-  // [모드 1] 인물 선택 -> 곡 조회
+  // [모드 1] 인물 선택 -> 곡 조회 (currentSongId 제외 및 역방향 BFS 힌트 결합)
   const handleSelectPerson = async (person: ConnectedPerson) => {
-    setSelectedPerson(person);
+    if (isPractice) {
+      setPracticeSelectedPerson(person);
+    } else {
+      setDailySelectedPerson(person);
+    }
+
     setIsGraphLoading(true);
     try {
       const data = await clientApi.inspectGraph({
         personId: person.id,
+        currentSongId: currentSong?.id,
         targetSongId: isHintMode && quest ? quest.targetSong.id : undefined
       });
-      setConnectedSongs(data.connectedSongs || []);
+
+      if (isPractice) {
+        setPracticeConnectedSongs(data.connectedSongs || []);
+      } else {
+        setDailyConnectedSongs(data.connectedSongs || []);
+      }
     } catch (err) {
       console.error("[handleSelectPerson] Error:", err);
       showToast("참여 곡 목록을 불러오지 못했습니다.", "error");
@@ -192,11 +265,16 @@ export default function DBDiggingPage() {
   };
 
   const handleCancelPersonSelection = () => {
-    setSelectedPerson(null);
-    setConnectedSongs([]);
+    if (isPractice) {
+      setPracticeSelectedPerson(null);
+      setPracticeConnectedSongs([]);
+    } else {
+      setDailySelectedPerson(null);
+      setDailyConnectedSongs([]);
+    }
   };
 
-  // [모드 1] 곡 선택
+  // [모드 1] 곡 선택 -> 트리 맵 분기(Branching) & 턴 전이
   const handleSelectSong = (nextSong: ConnectedSong | SongInfo, viaPerson: ConnectedPerson) => {
     if (!quest) return;
 
@@ -211,10 +289,50 @@ export default function DBDiggingPage() {
     };
 
     const nextHistory = [...historyStack, newStep];
-    setHistoryStack(nextHistory);
-    setCurrentSong(nextSong);
-    setSelectedPerson(null);
-    setConnectedSongs([]);
+    const nextDepth = nextHistory.length - 1;
+    const nextNodeId = `node_${nextSong.id}_${nextDepth}_${Date.now()}`;
+
+    // 실시간 탐험 트리 업데이트 (기존 가지는 보존하고 새 노드 추가)
+    const nextNode: ExplorationNode = {
+      nodeId: nextNodeId,
+      songId: nextSong.id,
+      song: nextSong,
+      depth: nextDepth,
+      parentNodeId: currentNodeId,
+      viaPerson: {
+        id: viaPerson.id,
+        name: viaPerson.name,
+        roles: viaPerson.roles ?? [],
+        roleLabels: viaPerson.roleLabels ?? []
+      },
+      childrenNodeIds: [],
+      isCurrent: true,
+      isStart: false,
+      isTarget: nextSong.id === quest.targetSong.id
+    };
+
+    const updatedTree = explorationTree.map((n) =>
+      n.nodeId === currentNodeId
+        ? { ...n, isCurrent: false, childrenNodeIds: [...n.childrenNodeIds, nextNodeId] }
+        : { ...n, isCurrent: false }
+    );
+    updatedTree.push(nextNode);
+
+    if (isPractice) {
+      setPracticeHistoryStack(nextHistory);
+      setPracticeCurrentSong(nextSong);
+      setPracticeTree(updatedTree);
+      setPracticeCurrentNodeId(nextNodeId);
+      setPracticeSelectedPerson(null);
+      setPracticeConnectedSongs([]);
+    } else {
+      setDailyHistoryStack(nextHistory);
+      setDailyCurrentSong(nextSong);
+      setDailyTree(updatedTree);
+      setDailyCurrentNodeId(nextNodeId);
+      setDailySelectedPerson(null);
+      setDailyConnectedSongs([]);
+    }
 
     // [전적] 데일리 모드 첫 턴 이동 시 도전 횟수 1회 기록
     if (gameMode === "daily" && quest && historyStack.length === 1) {
@@ -222,11 +340,11 @@ export default function DBDiggingPage() {
       setLatestStats(updated);
     }
 
+    // 도착 목표 곡 도달 판정
     if (nextSong.id === quest.targetSong.id) {
       setIsClearModalOpen(true);
       showToast("🎉 축하합니다! 목적지 곡에 도달했습니다!", "success");
 
-      // [전적] 클리어 성공 기록 (데일리 vs 자유 연습 격리)
       if (gameMode === "daily") {
         const updated = recordDailyClear(quest.questId, nextHistory.length - 1);
         setLatestStats(updated);
@@ -237,28 +355,111 @@ export default function DBDiggingPage() {
     }
   };
 
-  // [모드 1] 백트래킹
+  // [모드 1] 탐험 트리 맵 상의 과거 노드 클릭 -> 부모 체인 역추적 백트래킹
+  const handleSelectTreeNode = (targetNode: ExplorationNode) => {
+    if (!quest) return;
+    if (targetNode.nodeId === currentNodeId) return;
+
+    // targetNode에서 root까지 parentNodeId 체인 역추적
+    const nodeMap = new Map<string, ExplorationNode>();
+    explorationTree.forEach((n) => nodeMap.set(n.nodeId, n));
+
+    const chain: ExplorationNode[] = [];
+    let curr: ExplorationNode | undefined = targetNode;
+    while (curr) {
+      chain.push(curr);
+      curr = curr.parentNodeId ? nodeMap.get(curr.parentNodeId) : undefined;
+    }
+    chain.reverse(); // root -> targetNode
+
+    const reconstructedHistory: HistoryStep[] = chain.map((n) => ({
+      song: n.song,
+      viaPerson: n.viaPerson
+    }));
+
+    const updatedTree = explorationTree.map((n) => ({
+      ...n,
+      isCurrent: n.nodeId === targetNode.nodeId
+    }));
+
+    if (isPractice) {
+      setPracticeHistoryStack(reconstructedHistory);
+      setPracticeCurrentSong(targetNode.song);
+      setPracticeTree(updatedTree);
+      setPracticeCurrentNodeId(targetNode.nodeId);
+      setPracticeSelectedPerson(null);
+      setPracticeConnectedSongs([]);
+    } else {
+      setDailyHistoryStack(reconstructedHistory);
+      setDailyCurrentSong(targetNode.song);
+      setDailyTree(updatedTree);
+      setDailyCurrentNodeId(targetNode.nodeId);
+      setDailySelectedPerson(null);
+      setDailyConnectedSongs([]);
+    }
+
+    showToast(`'${targetNode.song.title}'(으)로 되돌아갔습니다. (턴 조정)`, "info");
+  };
+
+  // [모드 1] 버튼 백트래킹 (1턴 직전 곡으로)
   const handleBacktrack = () => {
     if (historyStack.length <= 1) return;
 
     const newStack = historyStack.slice(0, -1);
     const prevStep = newStack[newStack.length - 1];
 
-    setHistoryStack(newStack);
-    setCurrentSong(prevStep.song);
-    setSelectedPerson(null);
-    setConnectedSongs([]);
+    // 트리 상에서 부모 노드 활성화
+    const currentNode = explorationTree.find((n) => n.nodeId === currentNodeId);
+    const parentNodeId = currentNode?.parentNodeId;
+
+    const updatedTree = explorationTree.map((n) => ({
+      ...n,
+      isCurrent: parentNodeId ? n.nodeId === parentNodeId : n.depth === newStack.length - 1
+    }));
+
+    const nextCurrentNodeId = parentNodeId || (updatedTree.find((n) => n.isCurrent)?.nodeId ?? "");
+
+    if (isPractice) {
+      setPracticeHistoryStack(newStack);
+      setPracticeCurrentSong(prevStep.song);
+      setPracticeTree(updatedTree);
+      setPracticeCurrentNodeId(nextCurrentNodeId);
+      setPracticeSelectedPerson(null);
+      setPracticeConnectedSongs([]);
+    } else {
+      setDailyHistoryStack(newStack);
+      setDailyCurrentSong(prevStep.song);
+      setDailyTree(updatedTree);
+      setDailyCurrentNodeId(nextCurrentNodeId);
+      setDailySelectedPerson(null);
+      setDailyConnectedSongs([]);
+    }
+
     showToast(`'${prevStep.song.title}'(으)로 되돌아갔습니다. (턴 차감)`, "info");
   };
 
-  // [모드 1] 연습 모드 런처
+  // [모드 1] 연습 모드 런처 (실제 새 퀘스트 시작 시에만 practice 전환)
   const handleLaunchPracticeQuest = (newQuest: QuestPayload) => {
-    setQuest(newQuest);
-    setCurrentSong(newQuest.startSong);
-    setHistoryStack([{ song: newQuest.startSong }]);
-    setSelectedPerson(null);
-    setConnectedSongs([]);
+    const rootNodeId = `node_${newQuest.startSong.id}_0_${Date.now()}`;
+    const rootNode: ExplorationNode = {
+      nodeId: rootNodeId,
+      songId: newQuest.startSong.id,
+      song: newQuest.startSong,
+      depth: 0,
+      childrenNodeIds: [],
+      isCurrent: true,
+      isStart: true
+    };
+
+    setPracticeQuest(newQuest);
+    setPracticeCurrentSong(newQuest.startSong);
+    setPracticeHistoryStack([{ song: newQuest.startSong }]);
+    setPracticeTree([rootNode]);
+    setPracticeCurrentNodeId(rootNodeId);
+    setPracticeSelectedPerson(null);
+    setPracticeConnectedSongs([]);
     setIsClearModalOpen(false);
+    setIsPracticeModalOpen(false);
     setGameMode("practice");
   };
 
@@ -293,7 +494,7 @@ export default function DBDiggingPage() {
         setDeepSeaConnectedSongs([]);
         setIsDeepSeaResultOpen(false);
 
-        // 1. 초기 미션 발급 (클라이언트 인메모리 엔진 직통)
+        // 1. 초기 미션 발급
         const missionData = await clientApi.getDeepSeaMission(baseSong.id, [baseSong.id]);
         setDeepSeaMission(missionData.mission);
 
@@ -312,7 +513,7 @@ export default function DBDiggingPage() {
     [currentSong, showToast]
   );
 
-  // [모드 2] 인물 선택 -> 연결 곡 조회
+  // [모드 2] 인물 선택
   const handleDeepSeaSelectPerson = async (person: ConnectedPerson) => {
     setDeepSeaSelectedPerson(person);
     setIsDeepSeaLoading(true);
@@ -332,7 +533,7 @@ export default function DBDiggingPage() {
     setDeepSeaConnectedSongs([]);
   };
 
-  // [모드 2] 곡 선택 -> 클라이언트 엔진 검증 및 턴 전이
+  // [모드 2] 곡 선택 -> 수심 전이
   const handleDeepSeaSelectSong = async (song: ConnectedSong, viaPerson: ConnectedPerson) => {
     if (!deepSeaCurrentSong || !deepSeaMission) return;
 
@@ -340,7 +541,6 @@ export default function DBDiggingPage() {
     try {
       const nextExclude = [...deepSeaVisitedSongIds, song.id];
 
-      // 1. 클라이언트 엔진 직통 호출 (판정 + nextMission 동시 수신)
       const data = await clientApi.validateDeepSeaStep(
         deepSeaCurrentSong.id,
         song.id,
@@ -361,7 +561,6 @@ export default function DBDiggingPage() {
         showToast("조건 불일치! 하트 1개 소모 💔", "error");
       }
 
-      // 2. 다이빙 히스토리 누적
       const historyEntry: DiveHistoryStep = {
         song,
         viaPerson: {
@@ -383,12 +582,10 @@ export default function DBDiggingPage() {
       setDeepSeaSelectedPerson(null);
       setDeepSeaConnectedSongs([]);
 
-      // 3. 하트 0개 도달 시 게임 오버 결과 모달
       if (nextLives <= 0) {
         setIsDeepSeaResultOpen(true);
         showToast("산소 고갈! 다이빙이 종료되었습니다.", "info");
 
-        // [전적] 심해 디깅 탐사 기록 누적
         const finalHistory = [...deepSeaDiveHistory, historyEntry];
         const playlist = finalHistory.map((h) => ({
           id: h.song.id,
@@ -400,7 +597,6 @@ export default function DBDiggingPage() {
         const updated = recordDeepSeaDive(nextDepth, getDiverTitle(nextDepth), playlist);
         setLatestStats(updated);
       } else {
-        // 다음 곡의 연결 인물 목록 로드
         const inspectData = await clientApi.inspectGraph({ songId: song.id });
         setDeepSeaConnectedPersons(inspectData.connectedPersons || []);
       }
@@ -417,7 +613,6 @@ export default function DBDiggingPage() {
     setIsDeepSeaResultOpen(true);
     showToast("안전하게 수면으로 부상했습니다. ⚓", "info");
 
-    // [전적] 심해 디깅 탐사 기록 누적
     const playlist = deepSeaDiveHistory.map((h) => ({
       id: h.song.id,
       title: h.song.title,
@@ -429,13 +624,14 @@ export default function DBDiggingPage() {
     setLatestStats(updated);
   };
 
-  // 모드 전환 핸들러
+  // 모드 전환 핸들러 (연습 모드 클릭 시 세션 오염 없이 모달만 오픈)
   const handleSelectGameMode = (mode: "daily" | "practice" | "deepsea") => {
     if (mode === "daily") {
       setGameMode("daily");
-      loadDailyQuest();
+      if (!dailyQuest) {
+        loadDailyQuest();
+      }
     } else if (mode === "practice") {
-      setGameMode("practice");
       setIsPracticeModalOpen(true);
     } else if (mode === "deepsea") {
       setGameMode("deepsea");
@@ -446,6 +642,7 @@ export default function DBDiggingPage() {
   const turnCount = Math.max(0, historyStack.length - 1);
   const canBacktrack = historyStack.length > 1;
 
+  // 엔진 로딩 스크린
   if (!isEngineReady) {
     return (
       <div className="min-h-screen bg-[#0b0f17] text-slate-100 flex flex-col items-center justify-center p-6">
@@ -491,10 +688,11 @@ export default function DBDiggingPage() {
         onOpenPracticeLauncher={() => setIsPracticeModalOpen(true)}
         onResetToDaily={loadDailyQuest}
         onOpenStats={() => handleOpenStats()}
+        onOpenTutorial={() => setIsTutorialModalOpen(true)}
       />
 
-      {/* 2. 메인 컨텐츠 영역 */}
-      <main className="flex-1 max-w-6xl w-full mx-auto px-4 py-6 space-y-5">
+      {/* 2. 메인 컨텐츠 영역 (PC 2-Column & 모바일 반응형 뷰포트) */}
+      <main className="flex-1 max-w-7xl w-full mx-auto px-4 py-5">
         {/* ======================================================== */}
         {/* [모드 2: 심해 디깅 화면]                                 */}
         {/* ======================================================== */}
@@ -505,40 +703,49 @@ export default function DBDiggingPage() {
               <p className="text-sm font-semibold">심해 잠항 준비 중...</p>
             </div>
           ) : deepSeaCurrentSong ? (
-            <>
-              {/* 심해 수심 및 하트 HUD 상태 바 */}
-              <DeepSeaStatusBar
-                depth={deepSeaDepth}
-                lives={deepSeaLives}
-                currentMission={deepSeaMission}
-                currentSong={deepSeaCurrentSong}
-                onSurface={handleDeepSeaSurface}
-              />
+            <div className="lg:grid lg:grid-cols-12 lg:gap-6 items-start">
+              {/* 좌측 패널 (lg: 5컬럼) - 상태바 + 수직 잠수 소나 맵 + 현재 곡 */}
+              <div className="lg:col-span-5 space-y-4">
+                <DeepSeaStatusBar
+                  depth={deepSeaDepth}
+                  lives={deepSeaLives}
+                  currentMission={deepSeaMission}
+                  currentSong={deepSeaCurrentSong}
+                  onSurface={handleDeepSeaSurface}
+                />
 
-              {/* 현재 위치 곡 정보 카드 */}
-              <CurrentSongCard
-                currentSong={deepSeaCurrentSong}
-                historyStack={deepSeaDiveHistory.map((d) => ({
-                  song: d.song,
-                  viaPerson: d.viaPerson
-                }))}
-              />
+                <DeepSeaSonarMap
+                  diveHistory={deepSeaDiveHistory}
+                  currentDepth={deepSeaDepth}
+                  lives={deepSeaLives}
+                />
 
-              {/* 심해 스포일러 블라인드 & 턴 뷰 */}
-              <DeepSeaTurnView
-                currentSong={deepSeaCurrentSong}
-                currentMission={deepSeaMission}
-                connectedPersons={deepSeaConnectedPersons}
-                connectedSongs={deepSeaConnectedSongs}
-                selectedPerson={deepSeaSelectedPerson}
-                onSelectPerson={handleDeepSeaSelectPerson}
-                onSelectSong={handleDeepSeaSelectSong}
-                onCancelPersonSelection={handleDeepSeaCancelPerson}
-                isHintMode={isHintMode}
-                isLoading={isDeepSeaLoading}
-                visitedSongIds={deepSeaVisitedSongIds}
-              />
-            </>
+                <CurrentSongCard
+                  currentSong={deepSeaCurrentSong}
+                  historyStack={deepSeaDiveHistory.map((d) => ({
+                    song: d.song,
+                    viaPerson: d.viaPerson
+                  }))}
+                />
+              </div>
+
+              {/* 우측 패널 (lg: 7컬럼) - 심해 턴 콘솔 (역할 탭 + 8카드) */}
+              <div className="lg:col-span-7 mt-4 lg:mt-0">
+                <DeepSeaTurnView
+                  currentSong={deepSeaCurrentSong}
+                  currentMission={deepSeaMission}
+                  connectedPersons={deepSeaConnectedPersons}
+                  connectedSongs={deepSeaConnectedSongs}
+                  selectedPerson={deepSeaSelectedPerson}
+                  onSelectPerson={handleDeepSeaSelectPerson}
+                  onSelectSong={handleDeepSeaSelectSong}
+                  onCancelPersonSelection={handleDeepSeaCancelPerson}
+                  isHintMode={isHintMode}
+                  isLoading={isDeepSeaLoading}
+                  visitedSongIds={deepSeaVisitedSongIds}
+                />
+              </div>
+            </div>
           ) : null
         ) : (
           /* ======================================================== */
@@ -550,35 +757,51 @@ export default function DBDiggingPage() {
               <p className="text-sm font-semibold">음악 그래프 로딩 중...</p>
             </div>
           ) : (
-            <>
-              <QuestStatusBar
-                startSong={quest.startSong}
-                targetSong={quest.targetSong}
-                turnCount={turnCount}
-                optimalTurns={quest.optimalTurns}
-                canBacktrack={canBacktrack}
-                onBacktrack={handleBacktrack}
-                gameMode={gameMode}
-              />
-
-              <CurrentSongCard currentSong={currentSong} historyStack={historyStack} />
-
-              {isHardcore ? (
-                <HardcoreInput currentSong={currentSong} onSelectSong={handleSelectSong} />
-              ) : (
-                <TurnCardView
-                  currentSongTitle={currentSong.title}
-                  connectedPersons={connectedPersons}
-                  connectedSongs={connectedSongs}
-                  selectedPerson={selectedPerson}
-                  onSelectPerson={handleSelectPerson}
-                  onSelectSong={handleSelectSong}
-                  onCancelPersonSelection={handleCancelPersonSelection}
-                  isLoading={isGraphLoading}
-                  isHintMode={isHintMode}
+            <div className="lg:grid lg:grid-cols-12 lg:gap-6 items-start">
+              {/* 좌측 패널 (lg: 5컬럼) - 상태바 + 미지 탐험 트리 맵 + 현재 곡 */}
+              <div className="lg:col-span-5 space-y-4">
+                <QuestStatusBar
+                  startSong={quest.startSong}
+                  targetSong={quest.targetSong}
+                  turnCount={turnCount}
+                  optimalTurns={quest.optimalTurns}
+                  canBacktrack={canBacktrack}
+                  onBacktrack={handleBacktrack}
+                  onGiveUp={() => setIsGiveUpModalOpen(true)}
+                  gameMode={gameMode}
                 />
-              )}
-            </>
+
+                <ExplorationTreeMap
+                  tree={explorationTree}
+                  currentNodeId={currentNodeId}
+                  targetSong={quest.targetSong}
+                  onSelectNode={handleSelectTreeNode}
+                />
+
+                <CurrentSongCard currentSong={currentSong} historyStack={historyStack} />
+              </div>
+
+              {/* 우측 패널 (lg: 7컬럼) - 턴 조작 콘솔 */}
+              <div className="lg:col-span-7 mt-4 lg:mt-0">
+                {isHardcore ? (
+                  <HardcoreInput currentSong={currentSong} onSelectSong={handleSelectSong} />
+                ) : (
+                  <TurnCardView
+                    currentSongTitle={currentSong.title}
+                    currentSongId={currentSong.id}
+                    connectedPersons={connectedPersons}
+                    connectedSongs={connectedSongs}
+                    selectedPerson={selectedPerson}
+                    onSelectPerson={handleSelectPerson}
+                    onSelectSong={handleSelectSong}
+                    onCancelPersonSelection={handleCancelPersonSelection}
+                    isLoading={isGraphLoading}
+                    isHintMode={isHintMode}
+                    visitedSongIds={visitedSongIds}
+                  />
+                )}
+              </div>
+            </div>
           )
         )}
       </main>
@@ -596,13 +819,33 @@ export default function DBDiggingPage() {
           historyStack={historyStack}
           onSwitchToPractice={() => {
             setIsClearModalOpen(false);
-            setGameMode("practice");
             setIsPracticeModalOpen(true);
           }}
           onShowToast={showToast}
           onOpenStats={() => handleOpenStats("daily")}
         />
       )}
+
+      {/* 모드 1 포기 및 정답 보기 모달 */}
+      {quest && (
+        <GiveUpModal
+          isOpen={isGiveUpModalOpen}
+          onClose={() => setIsGiveUpModalOpen(false)}
+          startSong={quest.startSong}
+          targetSong={quest.targetSong}
+          onRestart={loadDailyQuest}
+          onSwitchToPractice={() => {
+            setIsGiveUpModalOpen(false);
+            setIsPracticeModalOpen(true);
+          }}
+        />
+      )}
+
+      {/* 4단계 탭형 게임 가이드 모달 */}
+      <TutorialModal
+        isOpen={isTutorialModalOpen}
+        onClose={() => setIsTutorialModalOpen(false)}
+      />
 
       {/* 모드 1 자유 연습 모드 런처 모달 */}
       <PracticeLauncherModal

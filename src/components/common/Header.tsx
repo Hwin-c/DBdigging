@@ -1,7 +1,7 @@
 "use client";
 
 import React from "react";
-import { Disc3, Flame, Lightbulb, Compass, Waves, BarChart3 } from "lucide-react";
+import { Disc3, Flame, Lightbulb, Compass, Waves, BarChart3, HelpCircle } from "lucide-react";
 
 interface HeaderProps {
   gameMode: "daily" | "practice" | "deepsea";
@@ -13,6 +13,7 @@ interface HeaderProps {
   onOpenPracticeLauncher: () => void;
   onResetToDaily: () => void;
   onOpenStats?: () => void;
+  onOpenTutorial?: () => void;
 }
 
 export function Header({
@@ -24,7 +25,8 @@ export function Header({
   onToggleHardcore,
   onOpenPracticeLauncher,
   onResetToDaily,
-  onOpenStats
+  onOpenStats,
+  onOpenTutorial
 }: HeaderProps) {
   return (
     <header className="sticky top-0 z-40 w-full border-b border-slate-800/80 bg-[#0b0f17]/90 backdrop-blur-md">
@@ -145,6 +147,18 @@ export function Header({
             >
               <BarChart3 className="w-3.5 h-3.5 text-amber-400" />
               <span className="hidden sm:inline">전적</span>
+            </button>
+          )}
+
+          {/* Guide / Tutorial Button */}
+          {onOpenTutorial && (
+            <button
+              onClick={onOpenTutorial}
+              title="게임 방법 및 가이드"
+              className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-semibold bg-slate-900/80 border border-slate-800 text-slate-300 hover:text-white hover:border-slate-700 transition-all shadow-sm active:scale-95"
+            >
+              <HelpCircle className="w-3.5 h-3.5 text-sky-400" />
+              <span className="hidden sm:inline">가이드</span>
             </button>
           )}
         </div>

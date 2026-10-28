@@ -126,6 +126,7 @@ export interface ShortestPathResult {
   startSongId: string;
   targetSongId: string;
   path: string[]; // 노드 ID 시퀀스 (예: [song_id, person_id, song_id, ...])
+  typedPath: string[]; // 접두사 보존 시퀀스 (예: ['s:song_id', 'p:person_id', ...])
   turns: number; // Math.floor((path.length - 1) / 2)
   found: boolean;
 }
