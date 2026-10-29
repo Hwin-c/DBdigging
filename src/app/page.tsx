@@ -34,6 +34,7 @@ import {
   UserStatsPayload
 } from "@/lib/storage/stats";
 import { clientApi, ensureGraphLoaded } from "@/lib/game/clientApi";
+import { isMatchingTargetSong } from "@/lib/game/search";
 import { Disc3 } from "lucide-react";
 
 function getDiverTitle(depth: number): string {
@@ -484,12 +485,13 @@ export default function DBDiggingPage() {
       isPending: false
     };
 
+    const isTarget = isMatchingTargetSong(nextSong, quest.targetSong);
     const existingSongNode = nodeMap.get(nextSongNodeId);
     const targetSongNode: ExplorationNode = existingSongNode
       ? {
           ...existingSongNode,
           isCurrent: true,
-          isTarget: nextSong.id === quest.targetSong.id
+          isTarget: isTarget || existingSongNode.isTarget
         }
       : {
           nodeId: nextSongNodeId,
@@ -507,7 +509,7 @@ export default function DBDiggingPage() {
           childrenNodeIds: [],
           isCurrent: true,
           isStart: nextSong.id === quest.startSong.id,
-          isTarget: nextSong.id === quest.targetSong.id
+          isTarget: isTarget
         };
 
     // 트리 재조립 (중복 ID 없이 병합)
@@ -569,8 +571,8 @@ export default function DBDiggingPage() {
       setLatestStats(updated);
     }
 
-    // 도착 목표 곡 도달 판정
-    if (nextSong.id === quest.targetSong.id) {
+    // 도착 목표 곡 도달 판정 (동일 곡 다른 앨범 버전 포함)
+    if (isTarget) {
       setIsClearModalOpen(true);
       showToast("축하합니다! 목적지 곡에 도달했습니다.", "success");
 

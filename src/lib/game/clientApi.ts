@@ -10,7 +10,7 @@
 import { getGraphStoreAsync } from "../graph/loader";
 import { getGraphEngine, GraphEngine } from "../graph/engine";
 import { loadSeedsAsync, getDailyQuest as getDailyQuestInternal, getRandomQuest as getRandomQuestInternal } from "./quest";
-import { searchSongsAndPersons, matchHardcoreAnswer, SearchResultItem, HardcoreMatchResult } from "./search";
+import { searchSongsAndPersons, matchHardcoreAnswer, isMatchingTargetSong, SearchResultItem, HardcoreMatchResult } from "./search";
 import { issueDeepSeaMission, validateDeepSeaStep as validateDeepSeaStepInternal } from "./deepsea";
 import {
   ConnectedPerson,
@@ -217,10 +217,13 @@ export const clientApi = {
 
       // 힌트 모드 (targetSongId 전달 시 최적 곡 Hoisting)
       if (targetSongId) {
-        const directTargetIdx = connectedSongs.findIndex((s) => s.id === targetSongId);
+        const targetSongObj = engine.getSong(targetSongId);
+        const directTargetIdx = connectedSongs.findIndex(
+          (s) => s.id === targetSongId || (targetSongObj && isMatchingTargetSong(s, targetSongObj))
+        );
         if (directTargetIdx !== -1) {
-          // 목표 곡이 바로 참여곡에 존재하는 경우
-          optimalNextId = targetSongId;
+          // 목표 곡(동일 곡 다른 앨범 버전 포함)이 바로 참여곡에 존재하는 경우
+          optimalNextId = connectedSongs[directTargetIdx].id;
           remainingTurns = 1;
         } else {
           // 경우 A: 만약 currentSongId 기준 최단 경로 상 첫 인물이 선택된 personId와 일치하는 경우

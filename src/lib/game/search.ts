@@ -39,6 +39,32 @@ export function extractNameVariants(rawName: string): string[] {
 }
 
 /**
+ * 목표 곡 도달 여부 판정 헬퍼 (동일 곡 다른 앨범 버전 및 ID 불일치 구제)
+ * - songId 완전 일치 시 즉시 true
+ * - 제목 유니코드 정규화 일치 && 아티스트 정규화 또는 괄호 별칭 교차 일치 판정
+ */
+export function isMatchingTargetSong(
+  song: { id: string; title: string; artist: string },
+  target?: { id: string; title: string; artist: string } | null
+): boolean {
+  if (!song || !target) return false;
+  if (song.id === target.id) return true;
+
+  const normTitleA = normalizeString(song.title);
+  const normTitleB = normalizeString(target.title);
+  if (!normTitleA || normTitleA !== normTitleB) return false;
+
+  const normArtistA = normalizeString(song.artist);
+  const normArtistB = normalizeString(target.artist);
+  if (normArtistA && normArtistA === normArtistB) return true;
+
+  // 괄호 별칭 교차 검사 (예: "엔하이픈 (ENHYPEN)" vs "ENHYPEN" vs "엔하이픈")
+  const variantsA = extractNameVariants(song.artist).map(normalizeString).filter(Boolean);
+  const variantsB = extractNameVariants(target.artist).map(normalizeString).filter(Boolean);
+  return variantsA.some((va) => variantsB.includes(va));
+}
+
+/**
  * 자유 모드 및 연습 모드를 위한 곡/인물 통합 고속 검색
  */
 export function searchSongsAndPersons(

@@ -2,7 +2,8 @@
 
 import React, { useRef, useState, useEffect, useMemo, useCallback } from "react";
 import { ExplorationNode, SongInfo, ROLE_LABELS } from "@/lib/graph/types";
-import { ZoomIn, ZoomOut, Maximize2, ChevronUp, ChevronDown, Compass } from "lucide-react";
+import { isMatchingTargetSong } from "@/lib/game/search";
+import { ZoomIn, ZoomOut, Maximize2, ChevronDown, Compass } from "lucide-react";
 
 export type { ExplorationNode };
 
@@ -43,10 +44,22 @@ export function ExplorationTreeMap({
   });
   const hasDraggedRef = useRef<boolean>(false);
 
-  // 1. 2-Mode 단일 노드 그래프 레이아웃 계산 (수평 축 일직선 정렬 + 분기 시에만 세로 적층)
+  // ----------------------------------------------------
+  // 2-Mode Bipartite Network 상하 2계층 분리 레이아웃 계산
+  // - 상단 층: ARTIST / CREATOR LAYER (y = 120 고정)
+  // - 하단 층: SONG / TRACK LAYER (y = 320 고정)
+  // - Y축 어긋남 0% 보장 및 X축 슬롯 간격 배치로 노드 겹침 0%
+  // ----------------------------------------------------
+  const ARTIST_LAYER_Y = 120;
+  const SONG_LAYER_Y = 320;
+  const CANVAS_HEIGHT = 450;
+  const MIN_GAP_SONG = 175; // 노래 노드 간 최소 X 간격 (LP 디스크 52px + 네임플레이트 112px 여유)
+  const MIN_GAP_ARTIST = 155; // 인물 캡슐 노드 간 최소 X 간격 (캡슐 92px 여유)
+  const START_X = 185; // 좌측 레이어 라벨(142px) 영역 여유 확보
+
   const { layoutItems, width, height, edges } = useMemo(() => {
     if (tree.length === 0) {
-      return { layoutItems: [], width: 640, height: 360, edges: [] };
+      return { layoutItems: [], width: 760, height: CANVAS_HEIGHT, edges: [] };
     }
 
     const nodeMap = new Map<string, ExplorationNode>();
@@ -62,48 +75,71 @@ export function ExplorationTreeMap({
 
     const maxDepth = Math.max(...Array.from(depthGroups.keys()), 0);
 
-    const STEP_X = 168; // 노드 중심 간 수평 간격
-    const Y_GAP = 112; // 분기 노드 간 수직 간격 (LP 디스크 + 하단 네임플레이트 여유 확보)
-    const START_X = 84;
-
-    let maxItemsInAnyDepth = 1;
-    depthGroups.forEach((group) => {
-      if (group.length > maxItemsInAnyDepth) {
-        maxItemsInAnyDepth = group.length;
-      }
-    });
-
-    const canvasHeight = Math.max(360, maxItemsInAnyDepth * Y_GAP + 140);
-    const canvasWidth = Math.max(640, START_X + (maxDepth + 1) * STEP_X + 80);
-
     const items: LayoutItem[] = [];
     const nodeCoords = new Map<string, { x: number; y: number }>();
 
-    // Depth 순서대로 정렬 배치 (부모 Y좌표를 기준으로 정렬하여 선 꼬임 최소화)
+    let lastArtistX = START_X - MIN_GAP_ARTIST;
+    let lastSongX = START_X - MIN_GAP_SONG;
+
+    // Depth 0부터 maxDepth까지 순서대로 엄격한 Bipartite 수평 레일 배치
     for (let d = 0; d <= maxDepth; d++) {
       const group = depthGroups.get(d) || [];
-      if (d > 0) {
-        group.sort((a, b) => {
-          const pA = a.parentNodeId ? nodeCoords.get(a.parentNodeId)?.y ?? canvasHeight / 2 : canvasHeight / 2;
-          const pB = b.parentNodeId ? nodeCoords.get(b.parentNodeId)?.y ?? canvasHeight / 2 : canvasHeight / 2;
-          return pA - pB;
+      if (group.length === 0) continue;
+
+      // 같은 깊이 내에서 부모 노드의 X좌표 순으로 정렬하여 에지 교차 방지
+      group.sort((a, b) => {
+        const pA = a.parentNodeId ? nodeCoords.get(a.parentNodeId)?.x ?? 0 : 0;
+        const pB = b.parentNodeId ? nodeCoords.get(b.parentNodeId)?.x ?? 0 : 0;
+        return pA - pB;
+      });
+
+      // 부모별 자식 클러스터 분할
+      const parentToChildren = new Map<string, ExplorationNode[]>();
+      group.forEach((node) => {
+        const pId = node.parentNodeId || "__root__";
+        const list = parentToChildren.get(pId) || [];
+        list.push(node);
+        parentToChildren.set(pId, list);
+      });
+
+      parentToChildren.forEach((children, pId) => {
+        const pCoord = nodeCoords.get(pId);
+        const childCount = children.length;
+
+        children.forEach((child, idx) => {
+          const isArtist = child.nodeType === "person";
+          const y = isArtist ? ARTIST_LAYER_Y : SONG_LAYER_Y;
+          const minGap = isArtist ? MIN_GAP_ARTIST : MIN_GAP_SONG;
+          const lastPlaced = isArtist ? lastArtistX : lastSongX;
+
+          let targetX: number;
+          if (pCoord) {
+            // 부모 X좌표 기준 다중 자식 분기 (ㅅ자 또는 V자 대칭 배치)
+            const clusterWidth = (childCount - 1) * minGap;
+            const clusterStartX = pCoord.x - clusterWidth / 2;
+            const proposedX = clusterStartX + idx * minGap;
+            targetX = Math.max(lastPlaced + minGap, proposedX);
+          } else {
+            // 루트 노드 (출발곡)
+            targetX = Math.max(START_X, lastPlaced + minGap);
+          }
+
+          items.push({ node: child, x: targetX, y });
+          nodeCoords.set(child.nodeId, { x: targetX, y });
+
+          if (isArtist) {
+            lastArtistX = targetX;
+          } else {
+            lastSongX = targetX;
+          }
         });
-      }
-
-      const count = group.length;
-      const totalGroupHeight = (count - 1) * Y_GAP;
-      const startY = (canvasHeight - totalGroupHeight) / 2;
-      const x = START_X + d * STEP_X;
-
-      group.forEach((node, idx) => {
-        // 단일 노드일 때는 정확히 중앙 수평 축(canvasHeight / 2)에 일직선 배치
-        const y = count === 1 ? canvasHeight / 2 : startY + idx * Y_GAP;
-        items.push({ node, x, y });
-        nodeCoords.set(node.nodeId, { x, y });
       });
     }
 
-    // 2. 에지 목록 추출 (parentNodeId 및 childrenNodeIds 양방향 참조로 모든 분기선 누락 없이 연결)
+    const maxCanvasX = Math.max(lastSongX, lastArtistX, START_X + 420);
+    const canvasWidth = Math.max(760, maxCanvasX + 180);
+
+    // 2. 에지 목록 추출 (상하 레이어 간 크로스 레이어 사선 에지)
     const edgeKeySet = new Set<string>();
     const edgeList: {
       id: string;
@@ -114,6 +150,7 @@ export function ExplorationTreeMap({
       roleLabels: string[];
       isCurrentPath: boolean;
       isPending: boolean;
+      isSameLayer: boolean;
     }[] = [];
 
     const addEdge = (parentNode: ExplorationNode, childNode: ExplorationNode) => {
@@ -134,18 +171,26 @@ export function ExplorationTreeMap({
           ? childNode.viaPerson.roleLabels
           : parentNode.viaRoleLabels || [];
 
-      const fromOffset = parentNode.nodeType === "song" ? 28 : 48;
-      const toOffset = childNode.nodeType === "song" ? 28 : 48;
+      // 노드 경계면 접점 오프셋 계산 (상하 레일 방향에 맞춘 수직/대각선 진출입)
+      const isSameLayer = parentNode.nodeType === childNode.nodeType;
+      const fromOffsetY = parentNode.nodeType === "song"
+        ? (childCoord.y < parentCoord.y ? -26 : 26) // 노래(하단) ➔ 인물(상단)으로 상향 진출
+        : (childCoord.y > parentCoord.y ? 18 : -18); // 인물(상단) ➔ 노래(하단)으로 하향 진출
+
+      const toOffsetY = childNode.nodeType === "song"
+        ? (parentCoord.y < childCoord.y ? -26 : 26) // 인물(상단) ➔ 노래(하단)으로 상단면 진입
+        : (parentCoord.y > childCoord.y ? 18 : -18);
 
       edgeList.push({
         id: edgeKey,
-        fromX: parentCoord.x + fromOffset,
-        fromY: parentCoord.y,
-        toX: childCoord.x - toOffset,
-        toY: childCoord.y,
+        fromX: parentCoord.x,
+        fromY: parentCoord.y + fromOffsetY,
+        toX: childCoord.x,
+        toY: childCoord.y + toOffsetY,
         roleLabels: rawRoles,
         isCurrentPath: childNode.isCurrent || childNode.isPending === true,
-        isPending: childNode.isPending === true
+        isPending: childNode.isPending === true,
+        isSameLayer
       });
     };
 
@@ -163,7 +208,7 @@ export function ExplorationTreeMap({
     return {
       layoutItems: items,
       width: canvasWidth,
-      height: canvasHeight,
+      height: CANVAS_HEIGHT,
       edges: edgeList
     };
   }, [tree]);
@@ -240,15 +285,15 @@ export function ExplorationTreeMap({
     <div
       className={`w-full bg-[#090A0F] border border-slate-800 rounded-xl flex flex-col overflow-hidden ${className}`}
     >
-      {/* 1. 상단 컨트롤 & 범례 헤더 */}
+      {/* 1. 상단 컨트롤 & 2-Mode Bipartite Network 헤더 */}
       <div className="px-3.5 py-2.5 border-b border-slate-800/90 flex flex-wrap items-center justify-between gap-2 bg-[#0D1117]">
         <div className="flex items-center gap-2 min-w-0">
           <Compass className="w-4 h-4 text-emerald-400 shrink-0" />
           <span className="text-xs font-black text-white tracking-tight whitespace-nowrap break-keep">
-            탐험 네트워크 맵
+            2-Mode Bipartite Network
           </span>
           <span className="text-[10px] text-slate-400 hidden sm:inline whitespace-nowrap break-keep">
-            (노드 클릭 시 해당 분기점으로 즉시 복귀)
+            (노래 ⟷ 인물·그룹 이원 그래프)
           </span>
         </div>
 
@@ -283,7 +328,7 @@ export function ExplorationTreeMap({
           </button>
         </div>
 
-        {/* 범례 (한 글자 줄바꿈 원천 차단) */}
+        {/* 범례 */}
         <div className="hidden sm:flex items-center gap-2.5 text-[10px] text-slate-400 shrink-0">
           <span className="inline-flex items-center gap-1 whitespace-nowrap break-keep">
             <span className="w-2.5 h-2.5 rounded-full bg-emerald-400 inline-block" />
@@ -304,7 +349,7 @@ export function ExplorationTreeMap({
         </div>
       </div>
 
-      {/* 2. 양방향 패닝 & 줌 지원 SVG 캔버스 뷰포트 (PC 세로 620px 시원하게 확장) */}
+      {/* 2. 양방향 패닝 & 줌 지원 SVG 캔버스 뷰포트 (PC 세로 620px) */}
       <div className={`relative w-full transition-all duration-200 ${mobileViewportClass} lg:h-[620px]`}>
         {/* 우측 상단 플로팅 줌/포커스 컨트롤 */}
         <div className="absolute top-3 right-3 z-20 flex items-center gap-1 bg-[#0D1117]/90 border border-slate-800 rounded-lg p-1 backdrop-blur-sm">
@@ -372,12 +417,94 @@ export function ExplorationTreeMap({
               viewBox={`0 0 ${width} ${height}`}
               className="block"
             >
-              {/* 1. 베지어 곡선 에지 및 순수 역할 태그 렌더링 */}
+              {/* ---------------------------------------------------- */}
+              {/* 1. 2-Mode Bipartite 수평 레일 가이드선 & 레이어 배지     */}
+              {/* ---------------------------------------------------- */}
+              <g className="bipartite-rails opacity-75 pointer-events-none">
+                {/* (A) 상단 ARTIST LAYER 레일 */}
+                <line
+                  x1="12"
+                  y1={ARTIST_LAYER_Y}
+                  x2={width - 12}
+                  y2={ARTIST_LAYER_Y}
+                  stroke="#065f46"
+                  strokeWidth="1.2"
+                  strokeDasharray="6 4"
+                />
+                <rect
+                  x="12"
+                  y={ARTIST_LAYER_Y - 12}
+                  width="146"
+                  height="24"
+                  rx="5"
+                  fill="#064e3b"
+                  fillOpacity="0.5"
+                  stroke="#059669"
+                  strokeWidth="1"
+                />
+                <text
+                  x="20"
+                  y={ARTIST_LAYER_Y + 4}
+                  fill="#34d399"
+                  fontSize="9"
+                  fontWeight="900"
+                  letterSpacing="0.4"
+                >
+                  ARTIST LAYER (65.6K)
+                </text>
+
+                {/* (B) 하단 SONG LAYER 레일 */}
+                <line
+                  x1="12"
+                  y1={SONG_LAYER_Y}
+                  x2={width - 12}
+                  y2={SONG_LAYER_Y}
+                  stroke="#312e81"
+                  strokeWidth="1.2"
+                  strokeDasharray="6 4"
+                />
+                <rect
+                  x="12"
+                  y={SONG_LAYER_Y - 12}
+                  width="138"
+                  height="24"
+                  rx="5"
+                  fill="#1e1b4b"
+                  fillOpacity="0.5"
+                  stroke="#6366f1"
+                  strokeWidth="1"
+                />
+                <text
+                  x="20"
+                  y={SONG_LAYER_Y + 4}
+                  fill="#a5b4fc"
+                  fontSize="9"
+                  fontWeight="900"
+                  letterSpacing="0.4"
+                >
+                  SONG LAYER (202.4K)
+                </text>
+              </g>
+
+              {/* ---------------------------------------------------- */}
+              {/* 2. 크로스 레이어 교차 에지 및 순수 역할 태그 렌더링       */}
+              {/* ---------------------------------------------------- */}
               {edges.map((edge) => {
-                const dx = Math.max(40, Math.abs(edge.toX - edge.fromX) * 0.45);
-                const pathData = `M ${edge.fromX} ${edge.fromY} C ${edge.fromX + dx} ${edge.fromY}, ${
-                  edge.toX - dx
-                } ${edge.toY}, ${edge.toX} ${edge.toY}`;
+                let pathData: string;
+                if (edge.isSameLayer) {
+                  // 그룹 ⟷ 멤버 간 동일 층 아크
+                  const arcH = 32;
+                  pathData = `M ${edge.fromX} ${edge.fromY} Q ${(edge.fromX + edge.toX) / 2} ${
+                    edge.fromY - arcH
+                  } ${edge.toX} ${edge.toY}`;
+                } else {
+                  // 상하 교차 사선 베지어 (V자 또는 ㅅ자 다중 에지)
+                  const dy = (edge.toY - edge.fromY) * 0.45;
+                  pathData = `M ${edge.fromX} ${edge.fromY} C ${edge.fromX} ${
+                    edge.fromY + dy
+                  }, ${edge.toX} ${edge.toY - dy}, ${edge.toX} ${edge.toY}`;
+                }
+
                 const midX = (edge.fromX + edge.toX) / 2;
                 const midY = (edge.fromY + edge.toY) / 2;
                 const roleText = edge.roleLabels.slice(0, 2).join("·");
@@ -438,14 +565,18 @@ export function ExplorationTreeMap({
                 );
               })}
 
-              {/* 2. 2-Mode 이종 기하학 노드 렌더링 */}
+              {/* ---------------------------------------------------- */}
+              {/* 3. 2-Mode 이종 기하학 노드 렌더링                       */}
+              {/* ---------------------------------------------------- */}
               {layoutItems.map(({ node, x, y }) => {
                 const isSong = node.nodeType === "song";
                 const isCurrent = node.isCurrent || node.nodeId === currentNodeId;
                 const isPending = node.isPending === true;
                 const isStart = node.isStart === true;
                 const isTarget =
-                  node.isTarget === true || (targetSong && node.songId === targetSong.id);
+                  node.isTarget === true ||
+                  (targetSong && node.song && isMatchingTargetSong(node.song, targetSong)) ||
+                  (targetSong && node.songId === targetSong.id);
 
                 // ====================================================
                 // (A) 노래 노드: 정원형 바이닐 레코드판 (LP Disc) + 하단 네임플레이트
