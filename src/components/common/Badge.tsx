@@ -2,6 +2,7 @@
 
 import React from "react";
 import { RoleCode, ROLE_LABELS } from "@/lib/graph/types";
+import { Sparkles, Disc3 } from "lucide-react";
 
 interface RoleBadgeProps {
   role: RoleCode;
@@ -10,22 +11,23 @@ interface RoleBadgeProps {
 }
 
 const ROLE_STYLES: Record<RoleCode, string> = {
-  1: "bg-cyan-950/60 text-cyan-300 border-cyan-500/40 shadow-[0_0_8px_rgba(6,182,212,0.15)]", // 가창
-  2: "bg-purple-950/60 text-purple-300 border-purple-500/40 shadow-[0_0_8px_rgba(168,85,247,0.15)]", // 피처링
-  3: "bg-emerald-950/60 text-emerald-300 border-emerald-500/40 shadow-[0_0_8px_rgba(16,185,129,0.15)]", // 작사
-  4: "bg-amber-950/60 text-amber-300 border-amber-500/40 shadow-[0_0_8px_rgba(245,158,11,0.15)]", // 작곡
-  5: "bg-rose-950/60 text-rose-300 border-rose-500/40 shadow-[0_0_8px_rgba(244,63,94,0.15)]", // 편곡
-  6: "bg-indigo-950/60 text-indigo-300 border-indigo-500/40 shadow-[0_0_8px_rgba(99,102,241,0.15)]" // 그룹소속
+  1: "bg-emerald-500/10 text-emerald-400 border-emerald-500/30", // 가창
+  2: "bg-sky-500/10 text-sky-400 border-sky-500/30", // 피처링
+  3: "bg-amber-500/10 text-amber-400 border-amber-500/30", // 작사
+  4: "bg-cyan-500/10 text-cyan-400 border-cyan-500/30", // 작곡
+  5: "bg-rose-500/10 text-rose-400 border-rose-500/30", // 편곡
+  6: "bg-slate-800 text-slate-200 border-slate-600" // 그룹소속
 };
 
 export function RoleBadge({ role, className = "", size = "sm" }: RoleBadgeProps) {
   const label = ROLE_LABELS[role] ?? `역할${role}`;
   const style = ROLE_STYLES[role] ?? "bg-slate-800 text-slate-300 border-slate-700";
-  const sizeClass = size === "sm" ? "text-[11px] px-1.5 py-0.5" : "text-xs px-2 py-1";
+  const sizeClass =
+    size === "sm" ? "text-[10px] px-1.5 py-0.5 leading-none" : "text-xs px-2 py-0.5 leading-tight";
 
   return (
     <span
-      className={`inline-flex items-center font-medium rounded border ${sizeClass} ${style} ${className}`}
+      className={`inline-flex items-center font-semibold tracking-tight rounded border whitespace-nowrap break-keep ${sizeClass} ${style} ${className}`}
     >
       {label}
     </span>
@@ -57,28 +59,29 @@ export function RoleBadgeList({
 }
 
 /**
- * 힌트 모드 전용 '★ 정답 루트' 골드 네온 배지
+ * 힌트 모드 전용 정답 루트 앰버 배지 (유니코드 이모지 제거)
  */
 export function OptimalHintBadge({ className = "" }: { className?: string }) {
   return (
     <span
-      className={`inline-flex items-center gap-1 font-bold rounded border text-[11px] px-2 py-0.5 bg-amber-500/20 text-amber-300 border-amber-400 shadow-[0_0_12px_rgba(245,158,11,0.4)] animate-pulse ${className}`}
+      className={`inline-flex items-center gap-1 font-bold rounded border text-[10px] px-2 py-0.5 bg-amber-500/15 text-amber-300 border-amber-400/60 whitespace-nowrap break-keep ${className}`}
     >
-      <span>★</span>
+      <Sparkles className="w-3 h-3 text-amber-400 shrink-0" />
       <span>정답 루트</span>
     </span>
   );
 }
 
 /**
- * 타이틀곡 배지
+ * 타이틀곡 배지 (유니코드 이모지 제거)
  */
 export function TitleTrackBadge({ className = "" }: { className?: string }) {
   return (
     <span
-      className={`inline-flex items-center gap-0.5 text-[10px] font-semibold px-1.5 py-0.5 rounded bg-yellow-500/10 text-yellow-400 border border-yellow-500/30 ${className}`}
+      className={`inline-flex items-center gap-1 text-[10px] font-bold tracking-wider px-1.5 py-0.5 rounded bg-amber-500/10 text-amber-400 border border-amber-500/30 whitespace-nowrap break-keep ${className}`}
     >
-      👑 타이틀
+      <Disc3 className="w-2.5 h-2.5 shrink-0" />
+      <span>TITLE</span>
     </span>
   );
 }

@@ -1,7 +1,7 @@
 "use client";
 
 import React from "react";
-import { Disc3, Flame, Lightbulb, Compass, Waves, BarChart3, HelpCircle } from "lucide-react";
+import { Disc3, Flame, Lightbulb, Compass, Waves, BarChart3, HelpCircle, SlidersHorizontal } from "lucide-react";
 
 interface HeaderProps {
   gameMode: "daily" | "practice" | "deepsea";
@@ -29,59 +29,61 @@ export function Header({
   onOpenTutorial
 }: HeaderProps) {
   return (
-    <header className="sticky top-0 z-40 w-full border-b border-slate-800/80 bg-[#0b0f17]/90 backdrop-blur-md">
-      <div className="max-w-6xl mx-auto px-4 h-16 flex items-center justify-between">
+    <header className="sticky top-0 z-40 w-full border-b border-slate-800/90 bg-[#090A0F]/95 backdrop-blur-md">
+      <div className="max-w-7xl mx-auto px-3 sm:px-4 h-14 sm:h-16 flex items-center justify-between gap-2">
         {/* Logo & Brand */}
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-3 min-w-0">
           <button
             onClick={onResetToDaily}
-            className="flex items-center gap-2 group text-left transition-transform active:scale-95"
+            className="flex items-center gap-2.5 group text-left transition-transform active:scale-95 shrink-0"
           >
-            <div className="w-9 h-9 rounded-xl bg-gradient-to-tr from-indigo-600 via-purple-600 to-pink-500 p-0.5 flex items-center justify-center shadow-[0_0_15px_rgba(99,102,241,0.35)] group-hover:shadow-[0_0_20px_rgba(168,85,247,0.5)] transition-all">
-              <div className="w-full h-full bg-[#0b0f17] rounded-[10px] flex items-center justify-center">
-                <Disc3 className="w-5 h-5 text-indigo-400 group-hover:rotate-180 transition-transform duration-700" />
-              </div>
+            <div className="w-8 h-8 sm:w-9 sm:h-9 rounded-full bg-[#121620] border border-emerald-500/50 flex items-center justify-center group-hover:border-emerald-400 transition-colors">
+              <Disc3 className="w-4 h-4 sm:w-5 sm:h-5 text-emerald-400 group-hover:rotate-180 transition-transform duration-700" />
             </div>
             <div>
               <div className="flex items-center gap-1.5">
-                <span className="font-extrabold text-base tracking-tight bg-gradient-to-r from-white via-indigo-100 to-purple-200 bg-clip-text text-transparent">
+                <span className="font-black text-sm sm:text-base tracking-tight text-white">
                   디비디깅
                 </span>
-                <span className="text-[10px] font-bold px-1.5 py-0.2 rounded bg-indigo-500/20 text-indigo-300 border border-indigo-500/30">
-                  MVP
+                <span className="text-[9px] font-bold tracking-wider px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-400 border border-emerald-500/30">
+                  DBDIGGING
                 </span>
               </div>
-              <p className="text-[10px] text-slate-400 tracking-wider">K-POP CREDIT PUZZLE</p>
+              <p className="text-[9px] text-slate-400 tracking-widest hidden sm:block">
+                K-POP CREDIT NETWORK PUZZLE
+              </p>
             </div>
           </button>
 
           {/* Mode Switch Tabs (Desktop) */}
-          <div className="hidden lg:flex items-center bg-slate-900/90 border border-slate-800 rounded-lg p-1 ml-4 gap-1">
+          <div className="hidden lg:flex items-center bg-[#0F131C] border border-slate-800 rounded-lg p-1 ml-3 gap-1">
             <button
               onClick={() => onSelectGameMode("daily")}
-              className={`px-3 py-1 rounded-md text-xs font-semibold transition-all ${
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-bold transition-all whitespace-nowrap break-keep ${
                 gameMode === "daily"
-                  ? "bg-indigo-600 text-white shadow-sm"
+                  ? "bg-emerald-500 text-slate-950"
                   : "text-slate-400 hover:text-slate-200"
               }`}
             >
-              오늘의 디깅
+              <Disc3 className="w-3.5 h-3.5" />
+              <span>오늘의 디깅</span>
             </button>
             <button
               onClick={() => onSelectGameMode("practice")}
-              className={`px-3 py-1 rounded-md text-xs font-semibold transition-all ${
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-bold transition-all whitespace-nowrap break-keep ${
                 gameMode === "practice"
-                  ? "bg-purple-600 text-white shadow-sm"
+                  ? "bg-amber-400 text-slate-950"
                   : "text-slate-400 hover:text-slate-200"
               }`}
             >
-              자유 연습
+              <Compass className="w-3.5 h-3.5" />
+              <span>맞춤 디깅</span>
             </button>
             <button
               onClick={() => onSelectGameMode("deepsea")}
-              className={`flex items-center gap-1 px-3 py-1 rounded-md text-xs font-semibold transition-all ${
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-bold transition-all whitespace-nowrap break-keep ${
                 gameMode === "deepsea"
-                  ? "bg-cyan-600 text-white shadow-[0_0_12px_rgba(6,182,212,0.4)]"
+                  ? "bg-cyan-400 text-slate-950"
                   : "text-slate-400 hover:text-cyan-300"
               }`}
             >
@@ -91,31 +93,31 @@ export function Header({
           </div>
         </div>
 
-        {/* Right Controls: Hint, Hardcore, Practice Launcher */}
-        <div className="flex items-center gap-2">
+        {/* Right Controls: Hint, Hardcore, Practice Launcher, Stats, Guide */}
+        <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
           {/* Practice Mode Launcher Button */}
           {gameMode === "practice" && (
             <button
               onClick={onOpenPracticeLauncher}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-purple-950/70 border border-purple-500/40 text-purple-200 hover:bg-purple-900/60 hover:border-purple-400 transition-all shadow-[0_0_10px_rgba(168,85,247,0.2)]"
+              className="hidden sm:flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-bold bg-amber-500/15 border border-amber-500/40 text-amber-300 hover:bg-amber-500/25 transition-all whitespace-nowrap break-keep"
             >
-              <Compass className="w-3.5 h-3.5 text-purple-400" />
-              <span>새 미션 선택</span>
+              <SlidersHorizontal className="w-3.5 h-3.5 text-amber-400" />
+              <span>조건 재설정</span>
             </button>
           )}
 
           {/* Hint Mode Toggle */}
           <button
             onClick={onToggleHintMode}
-            title={isHintMode ? "힌트 모드 끄기" : "힌트 모드 켜기 (정답 루트 강조 및 블라인드 해제)"}
-            className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-semibold border transition-all ${
+            title={isHintMode ? "힌트 모드 끄기" : "힌트 모드 켜기"}
+            className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-bold border transition-all whitespace-nowrap break-keep ${
               isHintMode
-                ? "bg-amber-950/70 border-amber-400 text-amber-300 shadow-[0_0_12px_rgba(245,158,11,0.3)]"
-                : "bg-slate-900/80 border-slate-800 text-slate-400 hover:text-slate-200 hover:border-slate-700"
+                ? "bg-amber-500/20 border-amber-400 text-amber-300"
+                : "bg-[#121620] border-slate-800 text-slate-400 hover:text-slate-200 hover:border-slate-700"
             }`}
           >
             <Lightbulb
-              className={`w-3.5 h-3.5 ${isHintMode ? "text-amber-300 animate-pulse fill-amber-300/30" : "text-slate-500"}`}
+              className={`w-3.5 h-3.5 ${isHintMode ? "text-amber-300" : "text-slate-500"}`}
             />
             <span className="hidden sm:inline">힌트</span>
           </button>
@@ -125,14 +127,14 @@ export function Header({
             <button
               onClick={onToggleHardcore}
               title={isHardcore ? "일반 모드로 전환" : "하드코어 주관식 모드로 전환"}
-              className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-semibold border transition-all ${
+              className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-bold border transition-all whitespace-nowrap break-keep ${
                 isHardcore
-                  ? "bg-rose-950/70 border-rose-500 text-rose-300 shadow-[0_0_12px_rgba(244,63,94,0.3)] animate-pulse"
-                  : "bg-slate-900/80 border-slate-800 text-slate-400 hover:text-slate-200 hover:border-slate-700"
+                  ? "bg-rose-500/20 border-rose-500 text-rose-300"
+                  : "bg-[#121620] border-slate-800 text-slate-400 hover:text-slate-200 hover:border-slate-700"
               }`}
             >
               <Flame
-                className={`w-3.5 h-3.5 ${isHardcore ? "text-rose-400 fill-rose-400/40" : "text-slate-500"}`}
+                className={`w-3.5 h-3.5 ${isHardcore ? "text-rose-400" : "text-slate-500"}`}
               />
               <span className="hidden sm:inline">하드코어</span>
             </button>
@@ -143,9 +145,9 @@ export function Header({
             <button
               onClick={onOpenStats}
               title="내 전적 및 백업/복원"
-              className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-semibold bg-slate-900/80 border border-slate-800 text-slate-300 hover:text-white hover:border-slate-700 transition-all shadow-sm active:scale-95"
+              className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-bold bg-[#121620] border border-slate-800 text-slate-300 hover:text-white hover:border-slate-700 transition-all active:scale-95 whitespace-nowrap break-keep"
             >
-              <BarChart3 className="w-3.5 h-3.5 text-amber-400" />
+              <BarChart3 className="w-3.5 h-3.5 text-emerald-400" />
               <span className="hidden sm:inline">전적</span>
             </button>
           )}
@@ -155,9 +157,9 @@ export function Header({
             <button
               onClick={onOpenTutorial}
               title="게임 방법 및 가이드"
-              className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-semibold bg-slate-900/80 border border-slate-800 text-slate-300 hover:text-white hover:border-slate-700 transition-all shadow-sm active:scale-95"
+              className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-bold bg-[#121620] border border-slate-800 text-slate-300 hover:text-white hover:border-slate-700 transition-all active:scale-95 whitespace-nowrap break-keep"
             >
-              <HelpCircle className="w-3.5 h-3.5 text-sky-400" />
+              <HelpCircle className="w-3.5 h-3.5 text-cyan-400" />
               <span className="hidden sm:inline">가이드</span>
             </button>
           )}
@@ -165,38 +167,43 @@ export function Header({
       </div>
 
       {/* Mobile/Tablet Mode Switcher Bar */}
-      <div className="lg:hidden flex items-center justify-around border-t border-slate-800/80 bg-slate-950/60 px-3 py-2 gap-1 overflow-x-auto">
-        <button
-          onClick={() => onSelectGameMode("daily")}
-          className={`px-2.5 py-1 rounded-md text-xs font-semibold shrink-0 transition-all ${
-            gameMode === "daily" ? "bg-indigo-600 text-white" : "text-slate-400"
-          }`}
-        >
-          오늘의 디깅
-        </button>
-        <button
-          onClick={() => onSelectGameMode("practice")}
-          className={`px-2.5 py-1 rounded-md text-xs font-semibold shrink-0 transition-all ${
-            gameMode === "practice" ? "bg-purple-600 text-white" : "text-slate-400"
-          }`}
-        >
-          자유 연습
-        </button>
-        <button
-          onClick={() => onSelectGameMode("deepsea")}
-          className={`flex items-center gap-1 px-2.5 py-1 rounded-md text-xs font-semibold shrink-0 transition-all ${
-            gameMode === "deepsea" ? "bg-cyan-600 text-white" : "text-slate-400"
-          }`}
-        >
-          <Waves className="w-3 h-3" />
-          <span>심해 디깅</span>
-        </button>
+      <div className="lg:hidden flex items-center justify-between border-t border-slate-800/80 bg-[#0B0E14] px-3 py-1.5 gap-1.5">
+        <div className="flex items-center gap-1 flex-1">
+          <button
+            onClick={() => onSelectGameMode("daily")}
+            className={`flex-1 flex items-center justify-center gap-1 py-1.5 px-2 rounded-md text-xs font-bold transition-all whitespace-nowrap break-keep ${
+              gameMode === "daily" ? "bg-emerald-500 text-slate-950" : "text-slate-400 bg-[#121620]"
+            }`}
+          >
+            <Disc3 className="w-3 h-3 shrink-0" />
+            <span>오늘의 디깅</span>
+          </button>
+          <button
+            onClick={() => onSelectGameMode("practice")}
+            className={`flex-1 flex items-center justify-center gap-1 py-1.5 px-2 rounded-md text-xs font-bold transition-all whitespace-nowrap break-keep ${
+              gameMode === "practice" ? "bg-amber-400 text-slate-950" : "text-slate-400 bg-[#121620]"
+            }`}
+          >
+            <Compass className="w-3 h-3 shrink-0" />
+            <span>맞춤 디깅</span>
+          </button>
+          <button
+            onClick={() => onSelectGameMode("deepsea")}
+            className={`flex-1 flex items-center justify-center gap-1 py-1.5 px-2 rounded-md text-xs font-bold transition-all whitespace-nowrap break-keep ${
+              gameMode === "deepsea" ? "bg-cyan-400 text-slate-950" : "text-slate-400 bg-[#121620]"
+            }`}
+          >
+            <Waves className="w-3 h-3 shrink-0" />
+            <span>심해 디깅</span>
+          </button>
+        </div>
         {gameMode === "practice" && (
           <button
             onClick={onOpenPracticeLauncher}
-            className="px-2 py-1 rounded-md text-xs font-semibold bg-purple-900/60 text-purple-200 border border-purple-500/30 shrink-0"
+            className="flex items-center gap-1 px-2.5 py-1.5 rounded-md text-xs font-bold bg-amber-500/15 text-amber-300 border border-amber-500/40 shrink-0 whitespace-nowrap break-keep"
           >
-            미션 변경
+            <SlidersHorizontal className="w-3 h-3" />
+            <span>조건</span>
           </button>
         )}
       </div>

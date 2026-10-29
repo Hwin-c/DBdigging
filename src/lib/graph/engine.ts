@@ -38,41 +38,139 @@ export class GraphEngine {
   }
 
   /**
+   * 가상 인물 ID 여부 판별 (singer_, name_, feat_, group_)
+   */
+  private isVirtualPersonId(id: string): boolean {
+    return /^(singer_|name_|feat_|group_)/.test(id);
+  }
+
+  /**
+   * 특정 인물 ID와 안전하게 결합 가능한 동일 이름 가상 ID 목록 반환
+   * (서로 다른 숫자 ID를 가진 동명이인은 절대 섞이지 않도록 가상 ID만 결합)
+   */
+  public getSafeMergedPersonIds(personId: string): string[] {
+    const personTuple = this.store.persons.get(personId);
+    if (!personTuple) return [personId];
+
+    const rawName = personTuple[0].trim();
+    const candidates = [
+      personId,
+      `singer_${rawName}`,
+      `name_${rawName}`,
+      `feat_${rawName}`,
+      `group_${rawName}`
+    ];
+
+    const uniqueIds = new Set<string>();
+    for (const cid of candidates) {
+      if (cid === personId) {
+        uniqueIds.add(cid);
+      } else {
+        const tuple = this.store.persons.get(cid);
+        if (tuple && tuple[0].trim() === rawName) {
+          uniqueIds.add(cid);
+        }
+      }
+    }
+    return Array.from(uniqueIds);
+  }
+
+  /**
    * 특정 곡에 참여한 모든 인물/그룹 목록 및 역할 배지 조회
+   * (동일 곡 내 정식 숫자 ID와 동일 이름의 가상 ID 중복 카드를 1개로 안전 병합)
    */
   public getConnectedPersons(songId: string): ConnectedPerson[] {
     const edges = this.store.songEdges.get(songId);
     if (!edges) return [];
 
-    return edges.map(([personId, roles]) => {
-      const personTuple = this.store.persons.get(personId);
-      const name = personTuple ? personTuple[0] : `ID:${personId}`;
-      const isGroup = personTuple ? personTuple[1] === 1 : false;
+    interface MergedPersonEntry {
+      id: string;
+      name: string;
+      isGroup: boolean;
+      roleSet: Set<RoleCode>;
+      groupIdSet: Set<string>;
+      memberIdSet: Set<string>;
+    }
 
+    const mergedList: MergedPersonEntry[] = [];
+
+    for (const [personId, roles] of edges) {
+      const personTuple = this.store.persons.get(personId);
+      const name = (personTuple ? personTuple[0] : `ID:${personId}`).trim();
+      const isGroup = personTuple ? personTuple[1] === 1 : false;
+      const isVirtual = this.isVirtualPersonId(personId);
+
+      // 병합 대상 탐색:
+      // 1) 이미 동일한 personId가 있거나
+      // 2) 이름이 같고 (기존 항목이 가상 ID이거나 현재 항목이 가상 ID인 경우) -> 동명이인(서로 다른 숫자 ID)은 분리 유지
+      const existing = mergedList.find(
+        (item) =>
+          item.id === personId ||
+          (item.name === name && (this.isVirtualPersonId(item.id) || isVirtual))
+      );
+
+      if (existing) {
+        // 정식 숫자 ID 우선 채택
+        if (this.isVirtualPersonId(existing.id) && !isVirtual) {
+          existing.id = personId;
+        }
+        if (isGroup) {
+          existing.isGroup = true;
+        }
+        for (const r of roles) {
+          existing.roleSet.add(r);
+        }
+        const gIds = this.store.memberToGroups.get(personId);
+        if (gIds) gIds.forEach((gid) => existing.groupIdSet.add(gid));
+        const mIds = this.store.groupToMembers.get(personId);
+        if (mIds) mIds.forEach((mid) => existing.memberIdSet.add(mid));
+      } else {
+        const roleSet = new Set<RoleCode>(roles);
+        const groupIdSet = new Set<string>(this.store.memberToGroups.get(personId) || []);
+        const memberIdSet = new Set<string>(this.store.groupToMembers.get(personId) || []);
+
+        mergedList.push({
+          id: personId,
+          name,
+          isGroup,
+          roleSet,
+          groupIdSet,
+          memberIdSet
+        });
+      }
+    }
+
+    return mergedList.map((entry) => {
+      // 이 인물의 가상 ID들에 연결된 그룹/멤버 정보도 안전하게 보강
+      const safeIds = this.getSafeMergedPersonIds(entry.id);
+      for (const sid of safeIds) {
+        const gIds = this.store.memberToGroups.get(sid);
+        if (gIds) gIds.forEach((gid) => entry.groupIdSet.add(gid));
+        const mIds = this.store.groupToMembers.get(sid);
+        if (mIds) mIds.forEach((mid) => entry.memberIdSet.add(mid));
+      }
+
+      const roles = Array.from(entry.roleSet).sort((a, b) => a - b);
       const roleLabels = roles.map((r) => ROLE_LABELS[r] || "기타");
 
-      // 소속 그룹 또는 소속 멤버 정보 추가
-      let affiliatedGroups: PersonInfo[] | undefined;
-      let affiliatedMembers: PersonInfo[] | undefined;
+      const affiliatedGroups =
+        entry.groupIdSet.size > 0
+          ? Array.from(entry.groupIdSet)
+              .map((gid) => this.store.getPerson(gid))
+              .filter((p): p is PersonInfo => p !== null)
+          : undefined;
 
-      const groupIds = this.store.memberToGroups.get(personId);
-      if (groupIds && groupIds.length > 0) {
-        affiliatedGroups = groupIds
-          .map((gid) => this.store.getPerson(gid))
-          .filter((p): p is PersonInfo => p !== null);
-      }
-
-      const memberIds = this.store.groupToMembers.get(personId);
-      if (memberIds && memberIds.length > 0) {
-        affiliatedMembers = memberIds
-          .map((mid) => this.store.getPerson(mid))
-          .filter((p): p is PersonInfo => p !== null);
-      }
+      const affiliatedMembers =
+        entry.memberIdSet.size > 0
+          ? Array.from(entry.memberIdSet)
+              .map((mid) => this.store.getPerson(mid))
+              .filter((p): p is PersonInfo => p !== null)
+          : undefined;
 
       return {
-        id: personId,
-        name,
-        isGroup,
+        id: entry.id,
+        name: entry.name,
+        isGroup: entry.isGroup,
         roles,
         roleLabels,
         affiliatedGroups,
@@ -83,6 +181,7 @@ export class GraphEngine {
 
   /**
    * 특정 인물/그룹이 참여한 모든 곡 조회
+   * (정식 숫자 ID와 동일 이름의 가상 ID 참여곡을 안전하게 통합 조회)
    * @param personId 인물 또는 그룹 ID
    * @param options.includeGroupHops 1-hop 그룹/멤버 계보를 통한 확장 탐색 여부 (기본값: true)
    * @param options.sortByLikes 좋아요 순 내림차순 정렬 여부 (기본값: true)
@@ -97,81 +196,96 @@ export class GraphEngine {
     const { includeGroupHops = true, sortByLikes = true } = options;
     const songMap = new Map<string, ConnectedSong>();
 
-    // 1. 직접 참여한 곡 조회 (Direct Connections)
-    const directSongs = this.store.personToSongs.get(personId);
-    if (directSongs) {
+    const targetPersonIds = this.getSafeMergedPersonIds(personId);
+
+    // 1. 직접 참여한 곡 조회 (Direct Connections - 정식 ID + 동일 이름 가상 ID 병합)
+    for (const pid of targetPersonIds) {
+      const directSongs = this.store.personToSongs.get(pid);
+      if (!directSongs) continue;
+
       for (const [songId, roles] of directSongs) {
         const songInfo = this.store.getSong(songId);
         if (!songInfo) continue;
 
-        songMap.set(songId, {
-          ...songInfo,
-          roles: [...roles],
-          roleLabels: roles.map((r) => ROLE_LABELS[r] || "기타"),
-          isViaGroupHop: false
-        });
+        const existing = songMap.get(songId);
+        if (existing) {
+          for (const r of roles) {
+            if (!existing.roles.includes(r)) {
+              existing.roles.push(r);
+              existing.roleLabels.push(ROLE_LABELS[r] || "기타");
+            }
+          }
+        } else {
+          songMap.set(songId, {
+            ...songInfo,
+            roles: [...roles],
+            roleLabels: roles.map((r) => ROLE_LABELS[r] || "기타"),
+            isViaGroupHop: false
+          });
+        }
       }
     }
 
     // 2. 1-hop 그룹/멤버 계보 곡 확장 탐색 (Stepping Stone)
     if (includeGroupHops) {
+      const allGroupIds = new Set<string>();
+      const allMemberIds = new Set<string>();
+      for (const pid of targetPersonIds) {
+        this.store.memberToGroups.get(pid)?.forEach((gid) => allGroupIds.add(gid));
+        this.store.groupToMembers.get(pid)?.forEach((mid) => allMemberIds.add(mid));
+      }
+
       // (A) 만약 personId가 특정 그룹의 멤버인 경우 ➔ 소속 그룹의 곡들 추가
-      const groupIds = this.store.memberToGroups.get(personId);
-      if (groupIds) {
-        for (const groupId of groupIds) {
-          const groupInfo = this.store.getPerson(groupId);
-          const groupSongs = this.store.personToSongs.get(groupId);
-          if (groupSongs) {
-            for (const [songId, gRoles] of groupSongs) {
-              const existing = songMap.get(songId);
-              if (existing) {
-                if (!existing.roles.includes(6)) {
-                  existing.roles.push(6);
-                  existing.roleLabels.push(ROLE_LABELS[6]);
-                }
-              } else {
-                const songInfo = this.store.getSong(songId);
-                if (!songInfo) continue;
-                songMap.set(songId, {
-                  ...songInfo,
-                  roles: [6, ...gRoles],
-                  roleLabels: [ROLE_LABELS[6], ...gRoles.map((r) => ROLE_LABELS[r] || "기타")],
-                  isViaGroupHop: true,
-                  hopSourcePersonId: groupId,
-                  hopSourcePersonName: groupInfo?.name || "소속 그룹"
-                });
+      for (const groupId of allGroupIds) {
+        const groupInfo = this.store.getPerson(groupId);
+        const groupSongs = this.store.personToSongs.get(groupId);
+        if (groupSongs) {
+          for (const [songId, gRoles] of groupSongs) {
+            const existing = songMap.get(songId);
+            if (existing) {
+              if (!existing.roles.includes(6)) {
+                existing.roles.push(6);
+                existing.roleLabels.push(ROLE_LABELS[6]);
               }
+            } else {
+              const songInfo = this.store.getSong(songId);
+              if (!songInfo) continue;
+              songMap.set(songId, {
+                ...songInfo,
+                roles: [6, ...gRoles],
+                roleLabels: [ROLE_LABELS[6], ...gRoles.map((r) => ROLE_LABELS[r] || "기타")],
+                isViaGroupHop: true,
+                hopSourcePersonId: groupId,
+                hopSourcePersonName: groupInfo?.name || "소속 그룹"
+              });
             }
           }
         }
       }
 
       // (B) 만약 personId가 그룹인 경우 ➔ 소속 멤버들의 곡들 추가
-      const memberIds = this.store.groupToMembers.get(personId);
-      if (memberIds) {
-        for (const memberId of memberIds) {
-          const memberInfo = this.store.getPerson(memberId);
-          const memberSongs = this.store.personToSongs.get(memberId);
-          if (memberSongs) {
-            for (const [songId, mRoles] of memberSongs) {
-              const existing = songMap.get(songId);
-              if (existing) {
-                if (!existing.roles.includes(6)) {
-                  existing.roles.push(6);
-                  existing.roleLabels.push(ROLE_LABELS[6]);
-                }
-              } else {
-                const songInfo = this.store.getSong(songId);
-                if (!songInfo) continue;
-                songMap.set(songId, {
-                  ...songInfo,
-                  roles: [6, ...mRoles],
-                  roleLabels: [ROLE_LABELS[6], ...mRoles.map((r) => ROLE_LABELS[r] || "기타")],
-                  isViaGroupHop: true,
-                  hopSourcePersonId: memberId,
-                  hopSourcePersonName: memberInfo?.name || "소속 멤버"
-                });
+      for (const memberId of allMemberIds) {
+        const memberInfo = this.store.getPerson(memberId);
+        const memberSongs = this.store.personToSongs.get(memberId);
+        if (memberSongs) {
+          for (const [songId, mRoles] of memberSongs) {
+            const existing = songMap.get(songId);
+            if (existing) {
+              if (!existing.roles.includes(6)) {
+                existing.roles.push(6);
+                existing.roleLabels.push(ROLE_LABELS[6]);
               }
+            } else {
+              const songInfo = this.store.getSong(songId);
+              if (!songInfo) continue;
+              songMap.set(songId, {
+                ...songInfo,
+                roles: [6, ...mRoles],
+                roleLabels: [ROLE_LABELS[6], ...mRoles.map((r) => ROLE_LABELS[r] || "기타")],
+                isViaGroupHop: true,
+                hopSourcePersonId: memberId,
+                hopSourcePersonName: memberInfo?.name || "소속 멤버"
+              });
             }
           }
         }
@@ -193,8 +307,14 @@ export class GraphEngine {
   public getRolesBetween(songId: string, personId: string): RoleCode[] {
     const edges = this.store.songEdges.get(songId);
     if (!edges) return [];
-    const match = edges.find(([pId]) => pId === personId);
-    return match ? match[1] : [];
+    const safeIds = new Set(this.getSafeMergedPersonIds(personId));
+    const roleSet = new Set<RoleCode>();
+    for (const [pId, roles] of edges) {
+      if (safeIds.has(pId)) {
+        roles.forEach((r) => roleSet.add(r));
+      }
+    }
+    return Array.from(roleSet);
   }
 
   /**

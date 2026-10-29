@@ -69,7 +69,9 @@ export function issueDeepSeaMission(
         entry = { song, bridgePersonIds: new Set<string>() };
         twoHopSongMap.set(song.id, entry);
       }
-      entry.bridgePersonIds.add(person.id);
+      for (const mid of engine.getSafeMergedPersonIds(person.id)) {
+        entry.bridgePersonIds.add(mid);
+      }
     }
   }
 

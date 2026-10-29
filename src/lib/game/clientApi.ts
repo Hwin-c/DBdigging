@@ -166,8 +166,11 @@ export const clientApi = {
           optimalNextId = pathRes.path[1];
           remainingTurns = pathRes.turns;
 
-          const matchIdx = connectedPersons.findIndex((p) => p.id === optimalNextId);
+          const matchIdx = connectedPersons.findIndex(
+            (p) => p.id === optimalNextId || engine.getSafeMergedPersonIds(p.id).includes(optimalNextId!)
+          );
           if (matchIdx !== -1) {
+            optimalNextId = connectedPersons[matchIdx].id;
             (connectedPersons[matchIdx] as any).isOptimalNext = true;
             if (matchIdx > 0) {
               const [opt] = connectedPersons.splice(matchIdx, 1);
@@ -224,7 +227,8 @@ export const clientApi = {
           let foundViaShortestPath = false;
           if (currentSongId) {
             const spRes = engine.findShortestPath(currentSongId, targetSongId, { allowedRoles });
-            if (spRes.found && spRes.path.length >= 3 && spRes.path[1] === personId) {
+            const mergedIds = engine.getSafeMergedPersonIds(personId);
+            if (spRes.found && spRes.path.length >= 3 && mergedIds.includes(spRes.path[1])) {
               // 1-hop 그룹 징검다리 대응: path.slice(2)에서 connectedSongIdSet에 속한 첫 번째 곡 찾기
               const nextValidSongId = spRes.path.slice(2).find((id) => connectedSongIdSet.has(id));
               if (nextValidSongId) {
