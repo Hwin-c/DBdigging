@@ -9,7 +9,13 @@
 
 import { getGraphStoreAsync } from "../graph/loader";
 import { getGraphEngine, GraphEngine } from "../graph/engine";
-import { loadSeedsAsync, getDailyQuest as getDailyQuestInternal, getRandomQuest as getRandomQuestInternal } from "./quest";
+import {
+  loadSeedsAsync,
+  getDailyQuest as getDailyQuestInternal,
+  getRandomQuest as getRandomQuestInternal,
+  generateCustomQuest as generateCustomQuestInternal,
+  checkInstantConnectivity as checkInstantConnectivityInternal
+} from "./quest";
 import { searchSongsAndPersons, matchHardcoreAnswer, isMatchingTargetSong, SearchResultItem, HardcoreMatchResult } from "./search";
 import { issueDeepSeaMission, validateDeepSeaStep as validateDeepSeaStepInternal } from "./deepsea";
 import {
@@ -21,7 +27,9 @@ import {
   QuestPayload,
   SongInfo,
   RoleCode,
-  PracticeFilterOptions
+  PracticeFilterOptions,
+  ConnectivityBadgeInfo,
+  CustomQuestGenerationResult
 } from "../graph/types";
 
 let initPromise: Promise<{ engine: GraphEngine }> | null = null;
@@ -88,6 +96,25 @@ export const clientApi = {
   async getRandomQuest(options: PracticeFilterOptions = {}): Promise<QuestPayload> {
     await ensureGraphLoaded();
     return getRandomQuestInternal(options);
+  },
+
+  /**
+   * [Step 13-3 Layer 1] 실시간 O(1) 컴포넌트 연결성 뱃지 조회
+   */
+  async checkInstantConnectivity(
+    startNode: { mode: "song" | "artist" | "creator"; id: string },
+    targetNode: { mode: "song" | "artist" | "creator"; id: string }
+  ): Promise<ConnectivityBadgeInfo | null> {
+    await ensureGraphLoaded();
+    return checkInstantConnectivityInternal(startNode, targetNode);
+  },
+
+  /**
+   * [Step 13-3 Layer 2] 맞춤 디깅 퀘스트 생성 및 3단계 예외 진단 통합 호출
+   */
+  async generateCustomQuest(options: PracticeFilterOptions = {}): Promise<CustomQuestGenerationResult> {
+    await ensureGraphLoaded();
+    return generateCustomQuestInternal(options);
   },
 
   /**

@@ -29,7 +29,9 @@ export function getSongComposers(songId: string): string[] {
   const edges = store.songEdges.get(songId);
   if (!edges) return [];
 
-  return edges.filter(([, roles]) => roles.includes(4)).map(([personId]) => personId);
+  return edges
+    .filter(([personId, roles]) => roles.includes(4) && !store.isBlockedPersonId(personId))
+    .map(([personId]) => personId);
 }
 
 /**

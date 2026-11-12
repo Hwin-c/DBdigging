@@ -38,17 +38,32 @@ export class GraphEngine {
   }
 
   /**
-   * 가상 인물 ID 여부 판별 (singer_, name_, feat_, group_)
+   * 특정 곡이 속한 연결 컴포넌트 ID를 O(1)로 반환
    */
-  private isVirtualPersonId(id: string): boolean {
-    return /^(singer_|name_|feat_|group_)/.test(id);
+  public getComponentId(songId: string): number | null {
+    return this.store.getComponentId(songId);
+  }
+
+  /**
+   * 가상 인물 ID 여부 판별 (singer_, name_, feat_, group_, artist_ 5종 전수 커버)
+   */
+  public isVirtualPersonId(id: string): boolean {
+    return /^(singer_|name_|feat_|group_|artist_)/.test(id);
+  }
+
+  /**
+   * 비인물 메타데이터 노드('name_미상', 'name_작자미상', ID '611339' 등) 차단 판별 헬퍼
+   */
+  public isBlockedNonPersonId(personId: string): boolean {
+    return this.store.isBlockedPersonId(personId);
   }
 
   /**
    * 특정 인물 ID와 안전하게 결합 가능한 동일 이름 가상 ID 목록 반환
-   * (서로 다른 숫자 ID를 가진 동명이인은 절대 섞이지 않도록 가상 ID만 결합)
+   * (서로 다른 숫자 ID를 가진 동명이인은 절대 섞이지 않도록 5종 가상 ID만 결합)
    */
   public getSafeMergedPersonIds(personId: string): string[] {
+    if (this.isBlockedNonPersonId(personId)) return [];
     const personTuple = this.store.persons.get(personId);
     if (!personTuple) return [personId];
 
@@ -58,11 +73,13 @@ export class GraphEngine {
       `singer_${rawName}`,
       `name_${rawName}`,
       `feat_${rawName}`,
-      `group_${rawName}`
+      `group_${rawName}`,
+      `artist_${rawName}`
     ];
 
     const uniqueIds = new Set<string>();
     for (const cid of candidates) {
+      if (this.isBlockedNonPersonId(cid)) continue;
       if (cid === personId) {
         uniqueIds.add(cid);
       } else {
@@ -77,7 +94,7 @@ export class GraphEngine {
 
   /**
    * 특정 곡에 참여한 모든 인물/그룹 목록 및 역할 배지 조회
-   * (동일 곡 내 정식 숫자 ID와 동일 이름의 가상 ID 중복 카드를 1개로 안전 병합)
+   * (동일 곡 내 정식 숫자 ID와 동일 이름의 가상 ID 중복 카드를 1개로 안전 병합 및 비인물 차단)
    */
   public getConnectedPersons(songId: string): ConnectedPerson[] {
     const edges = this.store.songEdges.get(songId);
@@ -95,6 +112,8 @@ export class GraphEngine {
     const mergedList: MergedPersonEntry[] = [];
 
     for (const [personId, roles] of edges) {
+      if (this.isBlockedNonPersonId(personId)) continue;
+
       const personTuple = this.store.persons.get(personId);
       const name = (personTuple ? personTuple[0] : `ID:${personId}`).trim();
       const isGroup = personTuple ? personTuple[1] === 1 : false;
@@ -121,13 +140,29 @@ export class GraphEngine {
           existing.roleSet.add(r);
         }
         const gIds = this.store.memberToGroups.get(personId);
-        if (gIds) gIds.forEach((gid) => existing.groupIdSet.add(gid));
+        if (gIds) {
+          gIds.forEach((gid) => {
+            if (!this.isBlockedNonPersonId(gid)) existing.groupIdSet.add(gid);
+          });
+        }
         const mIds = this.store.groupToMembers.get(personId);
-        if (mIds) mIds.forEach((mid) => existing.memberIdSet.add(mid));
+        if (mIds) {
+          mIds.forEach((mid) => {
+            if (!this.isBlockedNonPersonId(mid)) existing.memberIdSet.add(mid);
+          });
+        }
       } else {
         const roleSet = new Set<RoleCode>(roles);
-        const groupIdSet = new Set<string>(this.store.memberToGroups.get(personId) || []);
-        const memberIdSet = new Set<string>(this.store.groupToMembers.get(personId) || []);
+        const groupIdSet = new Set<string>(
+          (this.store.memberToGroups.get(personId) || []).filter(
+            (gid) => !this.isBlockedNonPersonId(gid)
+          )
+        );
+        const memberIdSet = new Set<string>(
+          (this.store.groupToMembers.get(personId) || []).filter(
+            (mid) => !this.isBlockedNonPersonId(mid)
+          )
+        );
 
         mergedList.push({
           id: personId,
@@ -145,9 +180,17 @@ export class GraphEngine {
       const safeIds = this.getSafeMergedPersonIds(entry.id);
       for (const sid of safeIds) {
         const gIds = this.store.memberToGroups.get(sid);
-        if (gIds) gIds.forEach((gid) => entry.groupIdSet.add(gid));
+        if (gIds) {
+          gIds.forEach((gid) => {
+            if (!this.isBlockedNonPersonId(gid)) entry.groupIdSet.add(gid);
+          });
+        }
         const mIds = this.store.groupToMembers.get(sid);
-        if (mIds) mIds.forEach((mid) => entry.memberIdSet.add(mid));
+        if (mIds) {
+          mIds.forEach((mid) => {
+            if (!this.isBlockedNonPersonId(mid)) entry.memberIdSet.add(mid);
+          });
+        }
       }
 
       const roles = Array.from(entry.roleSet).sort((a, b) => a - b);
@@ -193,6 +236,8 @@ export class GraphEngine {
       sortByLikes: true
     }
   ): ConnectedSong[] {
+    if (this.isBlockedNonPersonId(personId)) return [];
+
     const { includeGroupHops = true, sortByLikes = true } = options;
     const songMap = new Map<string, ConnectedSong>();
 
@@ -231,8 +276,12 @@ export class GraphEngine {
       const allGroupIds = new Set<string>();
       const allMemberIds = new Set<string>();
       for (const pid of targetPersonIds) {
-        this.store.memberToGroups.get(pid)?.forEach((gid) => allGroupIds.add(gid));
-        this.store.groupToMembers.get(pid)?.forEach((mid) => allMemberIds.add(mid));
+        this.store.memberToGroups.get(pid)?.forEach((gid) => {
+          if (!this.isBlockedNonPersonId(gid)) allGroupIds.add(gid);
+        });
+        this.store.groupToMembers.get(pid)?.forEach((mid) => {
+          if (!this.isBlockedNonPersonId(mid)) allMemberIds.add(mid);
+        });
       }
 
       // (A) 만약 personId가 특정 그룹의 멤버인 경우 ➔ 소속 그룹의 곡들 추가
@@ -305,6 +354,7 @@ export class GraphEngine {
    * 특정 곡과 특정 인물 사이의 역할 코드 배열 반환
    */
   public getRolesBetween(songId: string, personId: string): RoleCode[] {
+    if (this.isBlockedNonPersonId(personId)) return [];
     const edges = this.store.songEdges.get(songId);
     if (!edges) return [];
     const safeIds = new Set(this.getSafeMergedPersonIds(personId));
@@ -320,7 +370,7 @@ export class GraphEngine {
   /**
    * 엣지의 역할 코드가 allowedRolesSet에 부합하는지 O(1) 검사
    */
-  private isEdgeAllowed(curr: string, next: string, allowedRolesSet: Set<RoleCode>): boolean {
+  public isEdgeAllowed(curr: string, next: string, allowedRolesSet: Set<RoleCode>): boolean {
     // 1) s: <-> p: 전이
     if (curr.startsWith("s:") && next.startsWith("p:")) {
       const sId = curr.slice(2);
@@ -342,10 +392,12 @@ export class GraphEngine {
   }
 
   /**
-   * unweighted BFS 최단 경로 탐색 엔진 (곡 's:' / 인물 'p:' 접두사 기반 타입 격리)
-   * 756건의 숫자 ID 충돌에 의한 비정상 웜홀 경로를 원천 차단하고
-   * 유저가 실제 클릭 가능한 전이(Song <-> Person <-> Group <-> Song)만 탐색
-   * optimal_turns 계산식: Math.floor((optimal_path.length - 1) / 2)
+   * [Step 13-2 후보 2] 정식 멜론 숫자 ID 우선 경유 가중치 최단 경로 탐색 엔진
+   * - 곡 's:' / 인물 'p:' 접두사 기반 타입 격리 (756건 숫자 ID 충돌 웜홀 차단)
+   * - 비인물 허브('name_미상', 'name_작자미상', ID '611339' 등) 탐색 전면 차단
+   * - 가상 ID(singer_, name_, feat_, group_, artist_) 진입 시 페널티 가중치(+2 엣지 비용 = +1턴 상당)를 부여하는
+   *   Dial's Bucket 우선순위 큐(Dijkstra)를 적용하여 동일 조건에서 항상 정식 숫자 ID 경로를 우선 채택
+   * - optimal_turns 계산식: Math.floor((optimal_path.length - 1) / 2)
    */
   public findShortestPath(
     startSongId: string,
@@ -374,55 +426,126 @@ export class GraphEngine {
       };
     }
 
+    // 만약 allowedRoles가 빈 배열([])로 명시된 경우 이동 가능한 엣지가 없으므로 즉시 실패 반환
+    if (options?.allowedRoles !== undefined && options.allowedRoles.length === 0) {
+      return {
+        startSongId,
+        targetSongId,
+        path: [],
+        typedPath: [],
+        turns: -1,
+        found: false
+      };
+    }
+
+    // O(1) 컴포넌트 비교로 연결 불가능 쌍을 즉시 단락(Short-Circuit)
+    const startComp = this.store.getComponentId(startSongId);
+    const targetComp = this.store.getComponentId(targetSongId);
+    if (startComp !== null && targetComp !== null && startComp !== targetComp) {
+      return {
+        startSongId,
+        targetSongId,
+        path: [],
+        typedPath: [],
+        turns: -1,
+        found: false
+      };
+    }
+
     const startKey = `s:${startSongId}`;
     const targetKey = `s:${targetSongId}`;
+    const startIdx = this.store.nodeToIndex.get(startKey);
+    const targetIdx = this.store.nodeToIndex.get(targetKey);
+    if (startIdx === undefined || targetIdx === undefined) {
+      return {
+        startSongId,
+        targetSongId,
+        path: [],
+        typedPath: [],
+        turns: -1,
+        found: false
+      };
+    }
+
     const allowedRolesSet =
-      options?.allowedRoles && options.allowedRoles.length > 0
+      options?.allowedRoles && options.allowedRoles.length > 0 && options.allowedRoles.length < 6
         ? new Set(options.allowedRoles)
         : null;
 
-    // Queue 포인터 방식 unweighted BFS
-    const queue: string[] = [startKey];
-    let head = 0;
+    // Dial's Bucket Queue (정수 인덱스 TypedArray 기반 다익스트라 우선순위 큐)
+    // 일반 엣지 비용 = 1, 가상 인물 노드 진입 시 = 3 (기본 1 + 페널티 2 = +1턴 가중치)
+    const totalNodes = this.store.indexToNode.length;
+    const INF = 0x3fffffff;
+    const costDist = new Int32Array(totalNodes).fill(INF);
+    const virtDist = new Int32Array(totalNodes).fill(INF);
+    const parent = new Int32Array(totalNodes).fill(-1);
+    const settled = new Uint8Array(totalNodes);
 
-    const visited = new Set<string>([startKey]);
-    const parent = new Map<string, string>();
+    const adjIndices = this.store.adjIndices;
+    const nodeIsBlocked = this.store.nodeIsBlocked;
+    const nodeIsVirtual = this.store.nodeIsVirtual;
+    const indexToNode = this.store.indexToNode;
+
+    costDist[startIdx] = 0;
+    virtDist[startIdx] = 0;
+
+    const buckets: number[][] = [[startIdx]];
+    let currentCost = 0;
+    let remaining = 1;
     let foundTarget = false;
 
-    while (head < queue.length) {
-      const curr = queue[head++];
-      if (curr === targetKey) {
+    while (remaining > 0) {
+      while (!buckets[currentCost] || buckets[currentCost].length === 0) {
+        currentCost++;
+      }
+      const currIdx = buckets[currentCost].pop()!;
+      remaining--;
+
+      if (settled[currIdx]) continue;
+      if (currentCost > costDist[currIdx]) continue;
+      settled[currIdx] = 1;
+
+      if (currIdx === targetIdx) {
         foundTarget = true;
         break;
       }
 
-      const neighbors = this.store.adj.get(curr);
-      if (!neighbors) continue;
+      const currVirt = virtDist[currIdx];
+      const neighbors = adjIndices[currIdx];
+      const currNodeStr = allowedRolesSet ? indexToNode[currIdx] : "";
 
-      for (let i = 0; i < neighbors.length; i++) {
-        const next = neighbors[i];
+      for (let i = 0, len = neighbors.length; i < len; i++) {
+        const nextIdx = neighbors[i];
+        if (settled[nextIdx] || nodeIsBlocked[nextIdx]) continue;
 
-        // 허용 역할 제약 조건 O(1) 검사
-        if (allowedRolesSet && !this.isEdgeAllowed(curr, next, allowedRolesSet)) {
+        if (allowedRolesSet && !this.isEdgeAllowed(currNodeStr, indexToNode[nextIdx], allowedRolesSet)) {
           continue;
         }
 
-        if (!visited.has(next)) {
-          visited.add(next);
-          parent.set(next, curr);
+        const isNextVirtual = nodeIsVirtual[nextIdx];
+        const nextCost = currentCost + (isNextVirtual ? 3 : 1);
+        const nextVirt = currVirt + isNextVirtual;
+        const prevCost = costDist[nextIdx];
 
-          if (next === targetKey) {
-            foundTarget = true;
-            break;
+        if (
+          nextCost < prevCost ||
+          (nextCost === prevCost && nextVirt < virtDist[nextIdx])
+        ) {
+          costDist[nextIdx] = nextCost;
+          virtDist[nextIdx] = nextVirt;
+          parent[nextIdx] = currIdx;
+          let b = buckets[nextCost];
+          if (!b) {
+            b = [];
+            buckets[nextCost] = b;
           }
-          queue.push(next);
+          b.push(nextIdx);
+          remaining++;
         }
       }
-
-      if (foundTarget) break;
     }
 
-    if (!foundTarget && !visited.has(targetKey)) {
+    if (!foundTarget && costDist[targetIdx] === INF) {
       return {
         startSongId,
         targetSongId,
@@ -434,30 +557,192 @@ export class GraphEngine {
     }
 
     // 최단 경로 역추적 ('s:', 'p:' 접두사 제거하여 순수 노드 ID 배열로 복원)
-    const rawPath: string[] = [];
-    let currNode: string | undefined = targetKey;
-    while (currNode !== undefined) {
-      rawPath.push(currNode);
-      currNode = parent.get(currNode);
+    const idxPath: number[] = [];
+    let curr = targetIdx;
+    while (curr !== -1) {
+      idxPath.push(curr);
+      curr = parent[curr];
     }
-    rawPath.reverse();
+    idxPath.reverse();
 
-    const path = rawPath.map((k) => k.slice(2));
+    const typedPath = idxPath.map((idx) => indexToNode[idx]);
+    const path = idxPath.map((idx) => this.store.indexToRawId[idx]);
     const turns = Math.floor((path.length - 1) / 2);
 
     return {
       startSongId,
       targetSongId,
       path,
-      typedPath: rawPath,
+      typedPath,
       turns,
       found: true
     };
   }
 
   /**
-   * 단일 역방향 BFS: targetSongId에서 출발하여 candidateSongIds 중 가장 가까운 곡을 탐색
-   * 수백 개 후보 곡을 개별 BFS로 순회하지 않고 단 1회의 역방향 BFS(10~30ms)로 브라우저 프리징 0% 보장
+   * 단일 출발점(sourceSongId) 가중치 탐색을 통해 목표 턴 범위(minTurns~maxTurns) 내 후보 곡들을
+   * 단 1회의 탐색으로 수집 (맞춤 디깅 랜덤 퀘스트 생성 시 다중 BFS 호출로 인한 지연 원천 제거)
+   */
+  public findCandidatesFromSource(
+    sourceSongId: string,
+    minTurns: number,
+    maxTurns: number,
+    options?: {
+      allowedRoles?: RoleCode[];
+      filterFn?: (songId: string) => boolean;
+      maxStrictCollect?: number;
+    }
+  ): {
+    strictMatches: string[];
+    relaxedMatches: string[];
+    closestTurnSongId: string | null;
+    firstReachableSongId: string | null;
+  } {
+    const emptyRes = {
+      strictMatches: [] as string[],
+      relaxedMatches: [] as string[],
+      closestTurnSongId: null as string | null,
+      firstReachableSongId: null as string | null
+    };
+
+    if (!this.store.songs.has(sourceSongId)) return emptyRes;
+    if (options?.allowedRoles !== undefined && options.allowedRoles.length === 0) {
+      return emptyRes;
+    }
+
+    const startIdx = this.store.nodeToIndex.get(`s:${sourceSongId}`);
+    if (startIdx === undefined) return emptyRes;
+
+    const allowedRolesSet =
+      options?.allowedRoles && options.allowedRoles.length > 0 && options.allowedRoles.length < 6
+        ? new Set(options.allowedRoles)
+        : null;
+    const filterFn = options?.filterFn;
+    const maxStrictCollect = options?.maxStrictCollect ?? 80;
+
+    const totalNodes = this.store.indexToNode.length;
+    const INF = 0x3fffffff;
+    const costDist = new Int32Array(totalNodes).fill(INF);
+    const virtDist = new Int32Array(totalNodes).fill(INF);
+    const edgeDist = new Int32Array(totalNodes).fill(INF);
+    const settled = new Uint8Array(totalNodes);
+
+    const adjIndices = this.store.adjIndices;
+    const nodeIsBlocked = this.store.nodeIsBlocked;
+    const nodeIsVirtual = this.store.nodeIsVirtual;
+    const nodeIsSong = this.store.nodeIsSong;
+    const indexToNode = this.store.indexToNode;
+    const indexToRawId = this.store.indexToRawId;
+
+    costDist[startIdx] = 0;
+    virtDist[startIdx] = 0;
+    edgeDist[startIdx] = 0;
+
+    const buckets: number[][] = [[startIdx]];
+    let currentCost = 0;
+    let remaining = 1;
+
+    const strictMatches: string[] = [];
+    const relaxedMatches: string[] = [];
+    let firstReachableSongId: string | null = null;
+    let closestTurnSongId: string | null = null;
+    let bestTurnDiff = INF;
+
+    while (remaining > 0) {
+      while (!buckets[currentCost] || buckets[currentCost].length === 0) {
+        currentCost++;
+      }
+      const currIdx = buckets[currentCost].pop()!;
+      remaining--;
+
+      if (settled[currIdx]) continue;
+      if (currentCost > costDist[currIdx]) continue;
+      settled[currIdx] = 1;
+
+      const currEdges = edgeDist[currIdx];
+
+      if (currIdx !== startIdx && nodeIsSong[currIdx]) {
+        const candSongId = indexToRawId[currIdx];
+        const turns = currEdges >> 1;
+
+        if (!firstReachableSongId) {
+          firstReachableSongId = candSongId;
+        }
+
+        const diff =
+          turns < minTurns ? minTurns - turns : turns > maxTurns ? turns - maxTurns : 0;
+        if (diff < bestTurnDiff) {
+          bestTurnDiff = diff;
+          closestTurnSongId = candSongId;
+        }
+
+        if (turns >= minTurns && turns <= maxTurns) {
+          if (!filterFn || filterFn(candSongId)) {
+            strictMatches.push(candSongId);
+            if (strictMatches.length >= maxStrictCollect) {
+              break;
+            }
+          } else if (relaxedMatches.length < maxStrictCollect) {
+            relaxedMatches.push(candSongId);
+          }
+        }
+      }
+
+      // 만약 이미 strictMatches가 존재하고 현재 최소 엣지 비용으로도 maxTurns를 초과했다면 조기 종료
+      if (
+        (strictMatches.length > 0 || relaxedMatches.length >= maxStrictCollect) &&
+        currentCost > maxTurns * 6 + 2
+      ) {
+        break;
+      }
+
+      const currVirt = virtDist[currIdx];
+      const neighbors = adjIndices[currIdx];
+      const currNodeStr = allowedRolesSet ? indexToNode[currIdx] : "";
+
+      for (let i = 0, len = neighbors.length; i < len; i++) {
+        const nextIdx = neighbors[i];
+        if (settled[nextIdx] || nodeIsBlocked[nextIdx]) continue;
+
+        if (allowedRolesSet && !this.isEdgeAllowed(currNodeStr, indexToNode[nextIdx], allowedRolesSet)) {
+          continue;
+        }
+
+        const isNextVirtual = nodeIsVirtual[nextIdx];
+        const nextCost = currentCost + (isNextVirtual ? 3 : 1);
+        const nextVirt = currVirt + isNextVirtual;
+        const nextEdges = currEdges + 1;
+        const prevCost = costDist[nextIdx];
+
+        if (
+          nextCost < prevCost ||
+          (nextCost === prevCost && nextVirt < virtDist[nextIdx])
+        ) {
+          costDist[nextIdx] = nextCost;
+          virtDist[nextIdx] = nextVirt;
+          edgeDist[nextIdx] = nextEdges;
+          let b = buckets[nextCost];
+          if (!b) {
+            b = [];
+            buckets[nextCost] = b;
+          }
+          b.push(nextIdx);
+          remaining++;
+        }
+      }
+    }
+
+    return {
+      strictMatches,
+      relaxedMatches,
+      closestTurnSongId,
+      firstReachableSongId
+    };
+  }
+
+  /**
+   * 단일 역방향 가중치 탐색: targetSongId에서 출발하여 candidateSongIds 중 가장 가까운 곡을 탐색
+   * 비인물 노드 차단 및 후보 2 가상 ID 페널티 가중치 동일 적용
    */
   public findClosestCandidateSong(
     candidateSongIds: Set<string>,
@@ -480,69 +765,113 @@ export class GraphEngine {
       };
     }
 
+    if (options?.allowedRoles !== undefined && options.allowedRoles.length === 0) {
+      return null;
+    }
+
+    const targetIdx = this.store.nodeToIndex.get(targetKey);
+    if (targetIdx === undefined) return null;
+
     const allowedRolesSet =
-      options?.allowedRoles && options.allowedRoles.length > 0
+      options?.allowedRoles && options.allowedRoles.length > 0 && options.allowedRoles.length < 6
         ? new Set(options.allowedRoles)
         : null;
 
-    // Queue 포인터 방식 역방향 BFS (targetKey -> candidate song keys)
-    const queue: string[] = [targetKey];
-    let head = 0;
+    const totalNodes = this.store.indexToNode.length;
+    const INF = 0x3fffffff;
+    const costDist = new Int32Array(totalNodes).fill(INF);
+    const virtDist = new Int32Array(totalNodes).fill(INF);
+    const parent = new Int32Array(totalNodes).fill(-1);
+    const settled = new Uint8Array(totalNodes);
 
-    const visited = new Set<string>([targetKey]);
-    const parent = new Map<string, string>();
-    let foundKey: string | null = null;
+    const adjIndices = this.store.adjIndices;
+    const nodeIsBlocked = this.store.nodeIsBlocked;
+    const nodeIsVirtual = this.store.nodeIsVirtual;
+    const nodeIsSong = this.store.nodeIsSong;
+    const indexToNode = this.store.indexToNode;
+    const indexToRawId = this.store.indexToRawId;
 
-    while (head < queue.length) {
-      const curr = queue[head++];
-      const neighbors = this.store.adj.get(curr);
-      if (!neighbors) continue;
+    costDist[targetIdx] = 0;
+    virtDist[targetIdx] = 0;
 
-      for (let i = 0; i < neighbors.length; i++) {
-        const next = neighbors[i];
+    const buckets: number[][] = [[targetIdx]];
+    let currentCost = 0;
+    let remaining = 1;
+    let foundIdx = -1;
 
-        // 허용 역할 제약 조건 O(1) 검사
-        if (allowedRolesSet && !this.isEdgeAllowed(curr, next, allowedRolesSet)) {
-          continue;
-        }
+    while (remaining > 0) {
+      while (!buckets[currentCost] || buckets[currentCost].length === 0) {
+        currentCost++;
+      }
+      const currIdx = buckets[currentCost].pop()!;
+      remaining--;
 
-        if (!visited.has(next)) {
-          visited.add(next);
-          parent.set(next, curr);
+      if (settled[currIdx]) continue;
+      if (currentCost > costDist[currIdx]) continue;
+      settled[currIdx] = 1;
 
-          // 만약 곡 노드('s:')이고 candidateSongIds에 포함되어 있다면 즉시 종료!
-          if (next.startsWith("s:")) {
-            const candId = next.slice(2);
-            if (candidateSongIds.has(candId)) {
-              foundKey = next;
-              break;
-            }
-          }
-          queue.push(next);
+      if (currIdx !== targetIdx && nodeIsSong[currIdx]) {
+        const candId = indexToRawId[currIdx];
+        if (candidateSongIds.has(candId)) {
+          foundIdx = currIdx;
+          break;
         }
       }
 
-      if (foundKey) break;
+      const currVirt = virtDist[currIdx];
+      const neighbors = adjIndices[currIdx];
+      const currNodeStr = allowedRolesSet ? indexToNode[currIdx] : "";
+
+      for (let i = 0, len = neighbors.length; i < len; i++) {
+        const nextIdx = neighbors[i];
+        if (settled[nextIdx] || nodeIsBlocked[nextIdx]) continue;
+
+        if (allowedRolesSet && !this.isEdgeAllowed(currNodeStr, indexToNode[nextIdx], allowedRolesSet)) {
+          continue;
+        }
+
+        const isNextVirtual = nodeIsVirtual[nextIdx];
+        const nextCost = currentCost + (isNextVirtual ? 3 : 1);
+        const nextVirt = currVirt + isNextVirtual;
+        const prevCost = costDist[nextIdx];
+
+        if (
+          nextCost < prevCost ||
+          (nextCost === prevCost && nextVirt < virtDist[nextIdx])
+        ) {
+          costDist[nextIdx] = nextCost;
+          virtDist[nextIdx] = nextVirt;
+          parent[nextIdx] = currIdx;
+          let b = buckets[nextCost];
+          if (!b) {
+            b = [];
+            buckets[nextCost] = b;
+          }
+          b.push(nextIdx);
+          remaining++;
+        }
+      }
     }
 
-    if (!foundKey) return null;
+    if (foundIdx === -1) return null;
 
-    // 경로 역추적: foundKey (candidate song) -> ... -> targetKey (target song)
-    const rawPath: string[] = [];
-    let currNode: string | undefined = foundKey;
-    while (currNode !== undefined) {
-      rawPath.push(currNode);
-      currNode = parent.get(currNode);
+    // 경로 역추적: foundIdx (candidate song) -> ... -> targetIdx (target song)
+    const idxPath: number[] = [];
+    let curr = foundIdx;
+    while (curr !== -1) {
+      idxPath.push(curr);
+      curr = parent[curr];
     }
 
-    const path = rawPath.map((k) => k.slice(2));
+    const typedPath = idxPath.map((idx) => indexToNode[idx]);
+    const path = idxPath.map((idx) => indexToRawId[idx]);
     const turns = Math.floor((path.length - 1) / 2);
 
     return {
-      songId: foundKey.slice(2),
+      songId: indexToRawId[foundIdx],
       turns,
       path,
-      typedPath: rawPath
+      typedPath
     };
   }
 }

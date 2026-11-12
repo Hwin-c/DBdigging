@@ -252,6 +252,78 @@ export interface DeepSeaMission {
 }
 
 /**
+ * [Step 13-3 Layer 1] 실시간 O(1) 컴포넌트 연결성 뱃지 정보
+ */
+export interface ConnectivityBadgeInfo {
+  isConnected: boolean;
+  startComponentId: number | null;
+  targetComponentId: number | null;
+  startComponentSize: number;
+  targetComponentSize: number;
+  startSong?: SongInfo | null;
+  targetSong?: SongInfo | null;
+}
+
+/**
+ * [Step 13-3 Layer 2] 맞춤 디깅 '경로 없음' 3대 실패 원인 코드
+ * - REASON_A: 서로 다른 컴포넌트 (네트워크 단절 / 고립 섬)
+ * - REASON_B: 크레딧 역할 필터 제한으로 인한 경로 차단
+ * - REASON_C: 경로는 존재하나 목표 최단 턴 거리(minTurns~maxTurns) 조건 불충족
+ */
+export type QuestFailureReasonCode = "REASON_A" | "REASON_B" | "REASON_C";
+
+/**
+ * [REASON_A] 동일 컴포넌트 내 유사 대체 곡 추천 항목
+ */
+export interface AlternativeSongRecommendation {
+  song: SongInfo;
+  similarityScore: number;
+  matchReasons: string[];
+}
+
+/**
+ * [Step 13-3 Layer 2] 맞춤 디깅 3단계 예외 진단 페이로드
+ */
+export interface QuestFailureDiagnostics {
+  reason: QuestFailureReasonCode;
+  startSong: SongInfo;
+  targetSong: SongInfo;
+  startComponentId: number | null;
+  targetComponentId: number | null;
+  startComponentSize: number;
+  targetComponentSize: number;
+  // REASON_A 전용: 양방향 대체 곡 추천 (동일 아티스트 -> 장르/연대/소속사 유사도 순 3곡)
+  alternativeTargetsInStartComp?: AlternativeSongRecommendation[];
+  alternativeStartsInTargetComp?: AlternativeSongRecommendation[];
+  // REASON_B 전용: 전체 역할 허용 시 최단 경로 상 등장하는 꺼진 역할 코드 안내
+  unrestrictedTurns?: number;
+  unrestrictedPath?: string[];
+  missingRoles?: RoleCode[];
+  missingRoleLabels?: string[];
+  // REASON_C 전용: 실제 턴 수 vs 설정 거리 범위 비교 및 원클릭 거리 변경
+  actualTurns?: number;
+  actualPath?: string[];
+  requestedMinTurns?: number;
+  requestedMaxTurns?: number;
+  distanceMismatchDirection?: "TOO_LONG" | "TOO_SHORT";
+  recommendedTurnDistance?: "short" | "standard" | "long" | "any";
+  targetPerson?: {
+    id: string;
+    name: string;
+    isGroup?: boolean;
+  };
+}
+
+/**
+ * 맞춤 디깅 퀘스트 생성 및 예외 진단 통합 반환 타입
+ */
+export interface CustomQuestGenerationResult {
+  ok: boolean;
+  quest?: QuestPayload;
+  diagnostics?: QuestFailureDiagnostics;
+}
+
+/**
  * 멜론 곡 상세 딥링크 URL 생성기 (클라이언트/서버 공용 순수 함수)
  */
 export function getMelonSongUrl(songId: string): string {

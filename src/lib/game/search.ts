@@ -85,6 +85,7 @@ export function searchSongsAndPersons(
   // 1. 인물/그룹 검색
   if (type === "person" || type === "all") {
     for (const [personId, personTuple] of store.persons.entries()) {
+      if (store.isBlockedPersonId(personId)) continue;
       const name = personTuple[0];
       if (name.toLowerCase().includes(q)) {
         results.push({

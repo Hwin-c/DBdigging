@@ -1,8 +1,18 @@
 "use client";
 
-import React, { useState } from "react";
-import { QuestPayload, PracticeFilterOptions, SearchResultItem, RoleCode } from "@/lib/graph/types";
+import React, { useState, useEffect } from "react";
+import {
+  QuestPayload,
+  PracticeFilterOptions,
+  SearchResultItem,
+  RoleCode,
+  ConnectivityBadgeInfo,
+  QuestFailureDiagnostics,
+  SongInfo
+} from "@/lib/graph/types";
 import { clientApi } from "@/lib/game/clientApi";
+import { ConnectivityBadge } from "@/components/custom/ConnectivityBadge";
+import { NoPathExceptionPanel } from "@/components/custom/NoPathExceptionPanel";
 import {
   Sparkles,
   X,
@@ -62,6 +72,8 @@ const ROLES_LIST: { id: string; label: string; roles: RoleCode[] }[] = [
   { id: "group_feat", label: "그룹/피처링", roles: [2, 6] }
 ];
 
+const ALL_ROLE_KEYS = ["singer", "lyricist", "composer", "arranger", "group_feat"];
+
 export function PracticeLauncherModal({
   isOpen,
   onClose,
@@ -78,6 +90,9 @@ export function PracticeLauncherModal({
   const [targetType, setTargetType] = useState<"random" | "song" | "artist">("random");
   const [selectedTarget, setSelectedTarget] = useState<{ id: string; name: string; display: string } | null>(null);
 
+  // Layer 1: O(1) 실시간 연결성 뱃지 상태
+  const [connectivityBadge, setConnectivityBadge] = useState<ConnectivityBadgeInfo | null>(null);
+
   // 검색 상태
   const [searchTargetSlot, setSearchTargetSlot] = useState<"start" | "target" | null>(null);
   const [searchQuery, setSearchQuery] = useState("");
@@ -92,22 +107,56 @@ export function PracticeLauncherModal({
   const [titleOnly, setTitleOnly] = useState(false);
 
   // Layer 3: 허용 크레딧 역할 (기본값: 전체 허용)
-  const [selectedRoleKeys, setSelectedRoleKeys] = useState<string[]>([
-    "singer",
-    "lyricist",
-    "composer",
-    "arranger",
-    "group_feat"
-  ]);
+  const [selectedRoleKeys, setSelectedRoleKeys] = useState<string[]>(ALL_ROLE_KEYS);
 
   // Layer 4: 목표 턴 거리
   const [turnDistance, setTurnDistance] = useState<"short" | "standard" | "long" | "any">("standard");
 
-  // Re-roll 미리보기 퀘스트 상태
+  // Re-roll 미리보기 퀘스트 및 3단계 예외 진단 상태
   const [previewQuest, setPreviewQuest] = useState<QuestPayload | null>(null);
+  const [failureDiagnostics, setFailureDiagnostics] = useState<QuestFailureDiagnostics | null>(null);
   const [isGenerating, setIsGenerating] = useState(false);
 
+  // [Step 13-3 Layer 1] 출발/도착 노드 선택 시 O(1) 컴포넌트 비교로 연결성 뱃지 즉시 갱신
+  useEffect(() => {
+    let cancelled = false;
+    if (
+      isOpen &&
+      startType !== "random" &&
+      selectedStart &&
+      targetType !== "random" &&
+      selectedTarget
+    ) {
+      clientApi
+        .checkInstantConnectivity(
+          { mode: startType, id: selectedStart.id },
+          { mode: targetType, id: selectedTarget.id }
+        )
+        .then((info) => {
+          if (!cancelled) {
+            setConnectivityBadge(info);
+          }
+        })
+        .catch(() => {
+          if (!cancelled) {
+            setConnectivityBadge(null);
+          }
+        });
+    } else {
+      setConnectivityBadge(null);
+    }
+
+    return () => {
+      cancelled = true;
+    };
+  }, [isOpen, startType, selectedStart, targetType, selectedTarget]);
+
   if (!isOpen) return null;
+
+  const resetPreviewState = () => {
+    setPreviewQuest(null);
+    setFailureDiagnostics(null);
+  };
 
   // 검색 모달 열기
   const openSearchModal = (slot: "start" | "target") => {
@@ -146,7 +195,7 @@ export function PracticeLauncherModal({
     } else if (searchTargetSlot === "target") {
       setSelectedTarget({ id: item.id, name: item.name, display: item.display });
     }
-    setPreviewQuest(null);
+    resetPreviewState();
     setSearchTargetSlot(null);
   };
 
@@ -161,15 +210,20 @@ export function PracticeLauncherModal({
     } else {
       setSelectedRoleKeys([...selectedRoleKeys, key]);
     }
-    setPreviewQuest(null);
+    resetPreviewState();
   };
 
-  // 4-Layer 맞춤 퀘스트 생성 (Re-roll 미리보기)
-  const handleGeneratePreviewQuest = async () => {
+  // 4-Layer 맞춤 퀘스트 생성 및 3단계 예외 진단 실행
+  const runQuestGeneration = async (
+    overrides?: Partial<PracticeFilterOptions>,
+    customRoleKeys?: string[],
+    autoResolveDistanceOnReplace = false
+  ) => {
     setIsGenerating(true);
     try {
+      const activeRoleKeys = customRoleKeys || selectedRoleKeys;
       const allowedRoles: RoleCode[] = [];
-      selectedRoleKeys.forEach((key) => {
+      activeRoleKeys.forEach((key) => {
         const item = ROLES_LIST.find((r) => r.id === key);
         if (item) allowedRoles.push(...item.roles);
       });
@@ -189,16 +243,152 @@ export function PracticeLauncherModal({
         agency: agencyVal,
         titleOnly,
         allowedRoles: allowedRoles.length < 6 ? allowedRoles : undefined,
-        turnDistance
+        turnDistance,
+        ...overrides
       };
 
-      const quest = await clientApi.getRandomQuest(filterOptions);
-      setPreviewQuest(quest);
+      const res = await clientApi.generateCustomQuest(filterOptions);
+      if (res.ok && res.quest) {
+        setPreviewQuest(res.quest);
+        setFailureDiagnostics(null);
+      } else if (res.diagnostics) {
+        // REASON_A 대체 곡 원클릭 교체 시 소형 섬 내부 최단 거리(예: 1~2턴)가 기존 거리 프리셋과 다를 경우 자동 보정하여 즉시 프리뷰 확정
+        if (
+          autoResolveDistanceOnReplace &&
+          res.diagnostics.reason === "REASON_C" &&
+          res.diagnostics.actualTurns &&
+          res.diagnostics.actualPath &&
+          res.diagnostics.actualPath.length >= 2
+        ) {
+          const diag = res.diagnostics;
+          if (diag.recommendedTurnDistance) {
+            setTurnDistance(diag.recommendedTurnDistance);
+          }
+          setPreviewQuest({
+            questId: `practice_${Date.now()}`,
+            startSong: diag.startSong,
+            targetSong: diag.targetSong,
+            optimalTurns: diag.actualTurns!,
+            optimalPath: diag.actualPath!,
+            isIsland: !diag.startSong.inGiant,
+            allowedRoles: allowedRoles.length < 6 ? allowedRoles : undefined,
+            targetPerson: diag.targetPerson
+          });
+          setFailureDiagnostics(null);
+        } else {
+          setPreviewQuest(null);
+          setFailureDiagnostics(res.diagnostics);
+        }
+      }
     } catch (err: any) {
       console.error("[PracticeLauncher] Generate error:", err);
       onShowToast("맞춤 퀘스트 생성에 실패했습니다. 조건을 완화해 보세요.", "error");
     } finally {
       setIsGenerating(false);
+    }
+  };
+
+  const handleGeneratePreviewQuest = () => {
+    runQuestGeneration();
+  };
+
+  // [REASON_A 원클릭 액션 1] 대체 도착 곡으로 즉시 교체
+  const handleReplaceTargetSong = (newTargetSong: SongInfo) => {
+    const lockedStart = failureDiagnostics?.startSong;
+    if (lockedStart && (startType === "random" || !selectedStart)) {
+      setStartType("song");
+      setSelectedStart({
+        id: lockedStart.id,
+        name: lockedStart.title,
+        display: lockedStart.display
+      });
+    }
+    setTargetType("song");
+    setSelectedTarget({
+      id: newTargetSong.id,
+      name: newTargetSong.title,
+      display: newTargetSong.display
+    });
+    onShowToast(`도착 곡을 '${newTargetSong.title}'(으)로 교체했습니다.`, "info");
+    runQuestGeneration(
+      {
+        ...(lockedStart
+          ? { startMode: "song", startId: lockedStart.id, startName: lockedStart.title }
+          : {}),
+        targetMode: "song",
+        targetId: newTargetSong.id,
+        targetName: newTargetSong.title
+      },
+      undefined,
+      true
+    );
+  };
+
+  // [REASON_A 원클릭 액션 2] 대체 출발 곡으로 즉시 교체
+  const handleReplaceStartSong = (newStartSong: SongInfo) => {
+    const lockedTarget = failureDiagnostics?.targetSong;
+    if (lockedTarget && (targetType === "random" || !selectedTarget)) {
+      setTargetType("song");
+      setSelectedTarget({
+        id: lockedTarget.id,
+        name: lockedTarget.title,
+        display: lockedTarget.display
+      });
+    }
+    setStartType("song");
+    setSelectedStart({
+      id: newStartSong.id,
+      name: newStartSong.title,
+      display: newStartSong.display
+    });
+    onShowToast(`출발 곡을 '${newStartSong.title}'(으)로 교체했습니다.`, "info");
+    runQuestGeneration(
+      {
+        startMode: "song",
+        startId: newStartSong.id,
+        startName: newStartSong.title,
+        ...(lockedTarget
+          ? { targetMode: "song", targetId: lockedTarget.id, targetName: lockedTarget.title }
+          : {})
+      },
+      undefined,
+      true
+    );
+  };
+
+  // [REASON_B 원클릭 액션] 모든 크레딧 역할 켜기
+  const handleEnableAllRoles = () => {
+    setSelectedRoleKeys(ALL_ROLE_KEYS);
+    onShowToast("모든 크레딧 역할 필터가 활성화되었습니다.", "success");
+    runQuestGeneration({ allowedRoles: undefined }, ALL_ROLE_KEYS);
+  };
+
+  // [REASON_C 원클릭 액션] 실제 최단 거리(N턴)로 설정 변경 및 즉시 미리보기 확정
+  const handleApplyActualDistance = (diag: QuestFailureDiagnostics) => {
+    const newDist = diag.recommendedTurnDistance || "any";
+    setTurnDistance(newDist);
+
+    if (diag.actualTurns && diag.actualPath && diag.actualPath.length >= 2) {
+      const allowedRoles: RoleCode[] = [];
+      selectedRoleKeys.forEach((key) => {
+        const item = ROLES_LIST.find((r) => r.id === key);
+        if (item) allowedRoles.push(...item.roles);
+      });
+
+      setPreviewQuest({
+        questId: `practice_${Date.now()}`,
+        startSong: diag.startSong,
+        targetSong: diag.targetSong,
+        optimalTurns: diag.actualTurns,
+        optimalPath: diag.actualPath,
+        isIsland: !diag.startSong.inGiant,
+        allowedRoles: allowedRoles.length < 6 ? allowedRoles : undefined,
+        targetPerson: diag.targetPerson
+      });
+      setFailureDiagnostics(null);
+      onShowToast(`목표 거리가 실제 최단 거리(${diag.actualTurns}턴)로 변경되었습니다.`, "success");
+    } else {
+      runQuestGeneration({ turnDistance: newDist });
     }
   };
 
@@ -309,7 +499,7 @@ export function PracticeLauncherModal({
                     onClick={() => {
                       setStartType("random");
                       setSelectedStart(null);
-                      setPreviewQuest(null);
+                      resetPreviewState();
                     }}
                     className={`flex items-center justify-center gap-1.5 py-2 px-2 rounded-xl border text-center transition-all ${
                       startType === "random"
@@ -370,7 +560,7 @@ export function PracticeLauncherModal({
                     onClick={() => {
                       setTargetType("random");
                       setSelectedTarget(null);
-                      setPreviewQuest(null);
+                      resetPreviewState();
                     }}
                     className={`flex items-center justify-center gap-1.5 py-2 px-2 rounded-xl border text-center transition-all ${
                       targetType === "random"
@@ -411,6 +601,9 @@ export function PracticeLauncherModal({
                   </button>
                 </div>
               </div>
+
+              {/* [Step 13-3 Layer 1] 실시간 O(1) 컴포넌트 연결성 뱃지 */}
+              <ConnectivityBadge info={connectivityBadge} />
             </div>
           )}
 
@@ -426,7 +619,7 @@ export function PracticeLauncherModal({
                       key={g.id}
                       onClick={() => {
                         setSelectedGenre(g.id);
-                        setPreviewQuest(null);
+                        resetPreviewState();
                       }}
                       className={`px-2.5 py-1.5 rounded-lg border text-xs transition-colors ${
                         selectedGenre === g.id
@@ -449,7 +642,7 @@ export function PracticeLauncherModal({
                       key={d.id}
                       onClick={() => {
                         setSelectedDecade(d.id);
-                        setPreviewQuest(null);
+                        resetPreviewState();
                       }}
                       className={`px-2.5 py-1.5 rounded-lg border text-xs transition-colors ${
                         selectedDecade === d.id
@@ -473,7 +666,7 @@ export function PracticeLauncherModal({
                       onClick={() => {
                         setSelectedAgency(ag);
                         setCustomAgency("");
-                        setPreviewQuest(null);
+                        resetPreviewState();
                       }}
                       className={`px-2.5 py-1.5 rounded-lg border text-xs transition-colors ${
                         selectedAgency === ag && !customAgency
@@ -489,7 +682,7 @@ export function PracticeLauncherModal({
                     value={customAgency}
                     onChange={(e) => {
                       setCustomAgency(e.target.value);
-                      setPreviewQuest(null);
+                      resetPreviewState();
                     }}
                     placeholder="소속사 직접 입력..."
                     className="px-3 py-1.5 rounded-lg bg-[#090A0F] border border-slate-800 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-emerald-500"
@@ -505,7 +698,7 @@ export function PracticeLauncherModal({
                     checked={titleOnly}
                     onChange={(e) => {
                       setTitleOnly(e.target.checked);
-                      setPreviewQuest(null);
+                      resetPreviewState();
                     }}
                     className="w-4 h-4 rounded text-emerald-500 focus:ring-emerald-500 bg-[#090A0F] border-slate-700"
                   />
@@ -570,7 +763,7 @@ export function PracticeLauncherModal({
                     key={dist.id}
                     onClick={() => {
                       setTurnDistance(dist.id as any);
-                      setPreviewQuest(null);
+                      resetPreviewState();
                     }}
                     className={`flex flex-col items-center justify-center p-3.5 rounded-xl border text-center transition-all ${
                       turnDistance === dist.id
@@ -588,9 +781,19 @@ export function PracticeLauncherModal({
         </div>
 
         {/* ======================================================== */}
-        {/* Re-roll 미리보기 카드 (QuestPreviewCard)                  */}
+        {/* Re-roll 미리보기 카드 또는 3단계 예외 진단 패널            */}
         {/* ======================================================== */}
         <div className="pt-3.5 border-t border-slate-800 mt-3.5 shrink-0 space-y-3">
+          {failureDiagnostics && (
+            <NoPathExceptionPanel
+              diagnostics={failureDiagnostics}
+              onReplaceTargetSong={handleReplaceTargetSong}
+              onReplaceStartSong={handleReplaceStartSong}
+              onEnableAllRoles={handleEnableAllRoles}
+              onApplyActualDistance={handleApplyActualDistance}
+            />
+          )}
+
           {previewQuest ? (
             <div className="p-3.5 rounded-2xl bg-[#090A0F] border border-emerald-500/40 space-y-2.5 animate-in fade-in duration-150">
               <div className="flex items-center justify-between">

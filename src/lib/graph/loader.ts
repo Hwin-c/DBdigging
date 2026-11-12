@@ -32,6 +32,43 @@ export function cleanSongTitle(rawTitle: string): string {
 }
 
 /**
+ * 비인물 메타데이터 결측치 노드 차단 목록 ('미상', '작자미상' 등 허브 왜곡 방지)
+ */
+export const BLOCKED_NON_PERSON_IDS = new Set<string>([
+  "name_미상",
+  "name_작자미상",
+  "611339",
+  "singer_미상",
+  "singer_작자미상",
+  "feat_미상",
+  "feat_작자미상",
+  "artist_미상",
+  "artist_작자미상",
+  "group_미상",
+  "group_작자미상"
+]);
+
+export const BLOCKED_NON_PERSON_NAMES = new Set<string>([
+  "미상",
+  "작자미상",
+  "작자 미상",
+  "작사미상",
+  "작곡미상",
+  "편곡미상",
+  "작자불명",
+  "불명"
+]);
+
+export function isBlockedNonPerson(personId: string, rawName?: string): boolean {
+  if (BLOCKED_NON_PERSON_IDS.has(personId)) return true;
+  if (rawName) {
+    const trimmed = rawName.trim();
+    if (BLOCKED_NON_PERSON_NAMES.has(trimmed)) return true;
+  }
+  return false;
+}
+
+/**
  * 브라우저 인메모리 양방향 그래프 데이터 저장소
  */
 export class GraphStore {
@@ -60,12 +97,49 @@ export class GraphStore {
   // O(1) 엣지 역할 조회 인덱스 ("${songId}_${personId}" -> RoleCode[])
   public songPersonRoles: Map<string, RoleCode[]> = new Map();
 
+  // O(1) 연결 컴포넌트(WCC) 조회 인덱스 (songId -> componentId, 1 = Giant Component)
+  public songComponentMap: Map<string, number> = new Map();
+  public componentSongIds: Map<number, string[]> = new Map();
+
+  // O(1) 비인물 차단 및 가상 ID 판별 캐시 + 정수 인덱스 인접 리스트 (초고속 다익스트라용)
+  public blockedPersonIds: Set<string> = new Set();
+  public nodeToIndex: Map<string, number> = new Map();
+  public indexToNode: string[] = [];
+  public indexToRawId: string[] = [];
+  public adjIndices: number[][] = [];
+  public nodeIsBlocked: Uint8Array = new Uint8Array(0);
+  public nodeIsVirtual: Uint8Array = new Uint8Array(0);
+  public nodeIsSong: Uint8Array = new Uint8Array(0);
+
   // 번들 로딩 및 파싱 시간 기록 (ms)
   public loadDurationMs: number = 0;
   public totalEdgesCount: number = 0;
   public cleanedTitleCount: number = 0;
 
   constructor() {}
+
+  /**
+   * 비인물 노드('미상', '작자미상', ID '611339' 등) 여부 O(1) 판별
+   */
+  public isBlockedPersonId(personId: string): boolean {
+    if (this.blockedPersonIds.has(personId)) return true;
+    if (BLOCKED_NON_PERSON_IDS.has(personId)) return true;
+    const tuple = this.persons.get(personId);
+    if (!tuple) return false;
+    return isBlockedNonPerson(personId, tuple[0]);
+  }
+
+  private getOrCreateNodeIndex(typedNode: string): number {
+    let idx = this.nodeToIndex.get(typedNode);
+    if (idx === undefined) {
+      idx = this.indexToNode.length;
+      this.nodeToIndex.set(typedNode, idx);
+      this.indexToNode.push(typedNode);
+      this.indexToRawId.push(typedNode.slice(2));
+      this.adjIndices.push([]);
+    }
+    return idx;
+  }
 
   private addAdjEdge(u: string, v: string) {
     let listU = this.adj.get(u);
@@ -81,12 +155,81 @@ export class GraphStore {
       this.adj.set(v, listV);
     }
     listV.push(u);
+
+    const uIdx = this.getOrCreateNodeIndex(u);
+    const vIdx = this.getOrCreateNodeIndex(v);
+    this.adjIndices[uIdx].push(vIdx);
+    this.adjIndices[vIdx].push(uIdx);
+  }
+
+  /**
+   * 로더 초기화 시 비인물 노드를 제외한 연결 컴포넌트(WCC)를 1회 계산하여 O(1) 조회 보장
+   */
+  private computeConnectedComponents(): void {
+    this.songComponentMap.clear();
+    this.componentSongIds.clear();
+
+    const totalNodes = this.indexToNode.length;
+    const visited = new Uint8Array(totalNodes);
+    const queue = new Int32Array(totalNodes);
+    const rawComponents: string[][] = [];
+
+    for (const songId of this.songs.keys()) {
+      const startIdx = this.nodeToIndex.get(`s:${songId}`);
+      if (startIdx === undefined || visited[startIdx]) continue;
+
+      const compSongs: string[] = [];
+      visited[startIdx] = 1;
+      queue[0] = startIdx;
+      let head = 0;
+      let tail = 1;
+
+      while (head < tail) {
+        const currIdx = queue[head++];
+        if (this.nodeIsSong[currIdx]) {
+          compSongs.push(this.indexToRawId[currIdx]);
+        }
+
+        const neighbors = this.adjIndices[currIdx];
+        for (let i = 0, len = neighbors.length; i < len; i++) {
+          const nextIdx = neighbors[i];
+          if (visited[nextIdx] || this.nodeIsBlocked[nextIdx]) continue;
+          visited[nextIdx] = 1;
+          queue[tail++] = nextIdx;
+        }
+      }
+
+      if (compSongs.length > 0) {
+        rawComponents.push(compSongs);
+      }
+    }
+
+    // 포함 곡 수 내림차순 정렬 (Component #1 = Giant Component)
+    rawComponents.sort((a, b) => b.length - a.length);
+
+    for (let idx = 0; idx < rawComponents.length; idx++) {
+      const compId = idx + 1;
+      const songsInComp = rawComponents[idx];
+      this.componentSongIds.set(compId, songsInComp);
+      for (let j = 0; j < songsInComp.length; j++) {
+        this.songComponentMap.set(songsInComp[j], compId);
+      }
+    }
   }
 
   public populate(bundle: RawGraphBundle, startTime: number = Date.now()): void {
     this.version = bundle.version;
     this.includedGroups = bundle.included_groups;
     this.roleCodes = bundle.role_codes;
+    this.blockedPersonIds.clear();
+    this.nodeToIndex.clear();
+    this.indexToNode = [];
+    this.indexToRawId = [];
+    this.adjIndices = [];
+
+    for (const blockedId of BLOCKED_NON_PERSON_IDS) {
+      this.blockedPersonIds.add(blockedId);
+    }
 
     // 1. 곡(Songs) 인덱싱 & 잔류 닫는 괄호 ) 제거 정제
     let cleanedCount = 0;
@@ -98,12 +241,18 @@ export class GraphStore {
         cleanedCount++;
       }
       this.songs.set(songId, tuple);
+      this.getOrCreateNodeIndex(`s:${songId}`);
     }
     this.cleanedTitleCount = cleanedCount;
 
-    // 2. 인물(Persons) 인덱싱
+    // 2. 인물(Persons) 인덱싱 및 비인물 차단 캐시 구축
     for (const personId of Object.keys(bundle.persons)) {
-      this.persons.set(personId, bundle.persons[personId]);
+      const tuple = bundle.persons[personId];
+      this.persons.set(personId, tuple);
+      if (isBlockedNonPerson(personId, tuple[0])) {
+        this.blockedPersonIds.add(personId);
+      }
+      this.getOrCreateNodeIndex(`p:${personId}`);
     }
 
     // 3. 그룹 엣지(group_edges) 인덱싱 및 adj 추가 (p:${memberId} <-> p:${groupId})
@@ -144,8 +293,54 @@ export class GraphStore {
       }
     }
 
+    // 5. 노드별 타입/차단/가상ID TypedArray 구축
+    const totalNodes = this.indexToNode.length;
+    this.nodeIsBlocked = new Uint8Array(totalNodes);
+    this.nodeIsVirtual = new Uint8Array(totalNodes);
+    this.nodeIsSong = new Uint8Array(totalNodes);
+    const virtualRe = /^(singer_|name_|feat_|group_|artist_)/;
+
+    for (let i = 0; i < totalNodes; i++) {
+      const typedNode = this.indexToNode[i];
+      const rawId = this.indexToRawId[i];
+      if (typedNode.startsWith("s:")) {
+        this.nodeIsSong[i] = 1;
+      } else {
+        if (this.isBlockedPersonId(rawId)) {
+          this.nodeIsBlocked[i] = 1;
+        }
+        if (virtualRe.test(rawId)) {
+          this.nodeIsVirtual[i] = 1;
+        }
+      }
+    }
+
+    // 6. 비인물 노드가 격리된 연결 컴포넌트(WCC) O(1) 맵 구축
+    this.computeConnectedComponents();
+
     this.totalEdgesCount = edgeCount + bundle.group_edges.length;
     this.loadDurationMs = Date.now() - startTime;
+  }
+
+  /**
+   * 특정 곡이 속한 연결 컴포넌트 ID를 O(1)로 반환 (1 = Giant Component, 미존재 시 null)
+   */
+  public getComponentId(songId: string): number | null {
+    return this.songComponentMap.get(songId) ?? null;
+  }
+
+  /**
+   * 특정 컴포넌트에 속한 모든 곡 ID 배열 반환
+   */
+  public getComponentSongs(compId: number): string[] {
+    return this.componentSongIds.get(compId) || [];
+  }
+
+  /**
+   * 특정 컴포넌트의 곡 수 반환
+   */
+  public getComponentSize(compId: number): number {
+    return this.componentSongIds.get(compId)?.length || 0;
   }
 
   /**
@@ -154,6 +349,7 @@ export class GraphStore {
   public getSong(songId: string): SongInfo | null {
     const tuple = this.songs.get(songId);
     if (!tuple) return null;
+    const compId = this.songComponentMap.get(songId);
     return {
       id: songId,
       title: tuple[0],
@@ -164,7 +360,7 @@ export class GraphStore {
       genre: tuple[4],
       likes: tuple[5],
       isTitle: tuple[6] === 1,
-      inGiant: tuple[7] === 1
+      inGiant: compId !== undefined ? compId === 1 : tuple[7] === 1
     };
   }
 
