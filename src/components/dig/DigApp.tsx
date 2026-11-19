@@ -14,6 +14,7 @@ import { SearchResults } from "./SearchResults";
 import { SongCard, SongCardSkeleton } from "./SongCard";
 import { SourceFooter } from "./SourceFooter";
 import { ErrorBox } from "./ui";
+import { YouTubeBlock } from "./YouTubeBlock";
 
 const PATH_KEY = "dig:path";
 const EXAMPLES = ["Flutter Hearts2Hearts", "Supernova aespa", "밤편지 아이유", "Get Lucky Daft Punk"];
@@ -186,6 +187,14 @@ export function DigApp() {
             activePerson={person}
             onPerson={onPerson}
             audioSlot={<AudioChips features={base} loading={featLoading} />}
+            videoSlot={
+              <YouTubeBlock
+                urls={d.youtube}
+                title={d.title}
+                artist={d.artists[0]?.name ?? d.artist}
+                onPlay={() => player.stop()}
+              />
+            }
           />
         )}
 
