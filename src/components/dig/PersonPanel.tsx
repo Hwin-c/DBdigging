@@ -37,10 +37,13 @@ export function PersonPanel({
 }) {
   const st = useAsync(
     () =>
-      getArtistCredits(personId).then((p) => {
-        onLoaded?.(p);
-        return p;
-      }),
+      getArtistCredits(personId)
+        // 제작 크레딧이 하나도 없는 가수는 부른 곡(가창 녹음)으로 보여 준다
+        .then((p) => (p.items.length ? p : getArtistCredits(personId, { includePerformer: true })))
+        .then((p) => {
+          onLoaded?.(p);
+          return p;
+        }),
     [personId],
   );
   const [filter, setFilter] = useState<Filter>("전체");

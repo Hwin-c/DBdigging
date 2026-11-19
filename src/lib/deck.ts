@@ -60,6 +60,8 @@ export const WEIGHT = {
   ORIGIN: 1.0,
   /** 담은 곡의 크레딧 인물에 더하는 값 (새 인물은 이 값으로 합류) */
   KEEP: 1.0,
+  /** 가수 축 인물의 시작 비중 (핵심 크레딧이 하나도 없는 곡에서만 쓴다) */
+  PERFORMER: 0.5,
   /** 넘긴 카드를 데려온 인물에서 빼는 값 */
   SKIP: 0.3,
   /** 비중 최솟값 (0이 되어 영영 안 나오는 일을 막음) */
@@ -67,6 +69,9 @@ export const WEIGHT = {
   /** 집중 중인 인물의 비중 배수 */
   FOCUS: 8,
 } as const;
+
+/** 가수 축 역할 이름. 핵심 크레딧(작곡·작사·편곡·프로듀서)이 0명인 곡에서만 쓴다 */
+export const PERFORMER_ROLE = "노래";
 
 export const SOUND = {
   /** energy·valence·danceability·acousticness 차이 기준 */
@@ -233,13 +238,17 @@ export function josaIga(word: string): string {
  * - 시작 곡 카드 자체: "Kenzie 작곡"
  * - 시작 곡 인물: "Kenzie 작곡 · 시작 곡과 같은 작곡"
  * - 담은 곡에서 만난 인물: "Supernova에서 만난 Dem Jointz가 작곡"
+ * - 가수 축(핵심 크레딧이 없는 곡): "볼빨간사춘기가 부른 다른 곡"
  */
 export function reasonText(v: Via, isOrigin = false): string {
   if (isOrigin) return `${v.name} ${v.role}`;
+  if (v.role === PERFORMER_ROLE) {
+    const sung = `${v.name}${josaIga(v.name)} 부른 다른 곡`;
+    return v.fromTitle ? `${v.fromTitle}에서 만난 ${sung}` : sung;
+  }
   if (v.fromTitle) return `${v.fromTitle}에서 만난 ${v.name}${josaIga(v.name)} ${v.role}`;
-  const sameNoun = v.role === "노래" ? "가수" : v.role;
   return v.role === v.originRole
-    ? `${v.name} ${v.role} · 시작 곡과 같은 ${sameNoun}`
+    ? `${v.name} ${v.role} · 시작 곡과 같은 ${v.role}`
     : `${v.name} ${v.role} · 시작 곡에선 ${v.originRole}`;
 }
 
@@ -295,55 +304,45 @@ interface SeedPerson {
   name: string;
   disambiguation?: string;
   role: string;
-  includePerformer?: boolean;
+  /** 가수 축 인물 (핵심 크레딧이 없는 곡에서만) */
+  performer?: boolean;
 }
 
+/** 가수로 쓰지 않는 특수 항목 */
+const NOT_A_SINGER = /^(various artists|\[unknown\]|\[anonymous\]|\[no artist\])$/i;
+
 /**
- * 한 곡에서 디깅할 인물 추출 (고유 MBID 기준):
- * 1) 핵심 역할(작곡·작사·편곡·프로듀서) 참여자 우선
- * 2) 핵심 역할이 일부만 표기되어 있으면(MAX_PEOPLE 미만) 나머지 제작 크레딧 참여자도 버리지 않고 채운다
- * 3) 크레딧이 전혀 없거나 일부만 표기된 노래도 추천·탐색할 수 있도록 가수(artists, 역할 "노래")를 함께 포함한다
+ * 한 곡에서 디깅할 인물 (고유 MBID 기준):
+ * - 핵심 역할(작곡·작사·편곡·프로듀서) 참여자만. 리믹서·악기 같은 그 밖의 크레딧은 쓰지 않는다
+ * - 핵심 크레딧이 0명일 때(형제 녹음 보충 후에도)만 가수를 가수 축으로 쓴다
  */
-function corePeople(credits: PersonCredit[], artists: ArtistLite[] = []): SeedPerson[] {
+function seedPeople(credits: PersonCredit[], artists: ArtistLite[] = []): SeedPerson[] {
   const seen = new Set<string>();
   const out: SeedPerson[] = [];
-  const core = credits.filter((c) => c.roles.some(isCoreRole));
-  const nonCore = credits.filter((c) => !c.roles.some(isCoreRole));
-
-  for (const c of [...core, ...nonCore]) {
+  for (const c of credits) {
     if (out.length >= DECK.MAX_PEOPLE) break;
-    if (seen.has(c.artist.id)) continue;
+    if (!c.roles.some(isCoreRole) || seen.has(c.artist.id)) continue;
     seen.add(c.artist.id);
     out.push({
       personId: c.artist.id,
       name: c.artist.name,
       disambiguation: c.artist.disambiguation,
-      role: c.roles.find(isCoreRole) ?? c.roles[0],
+      role: c.roles.find(isCoreRole)!,
     });
   }
-
+  if (out.length) return out;
   for (const a of artists) {
-    if (!a.id) continue;
-    const existing = out.find((p) => p.personId === a.id);
-    if (existing) {
-      existing.includePerformer = true;
-      continue;
-    }
-    if (out.length >= DECK.MAX_PEOPLE && core.length >= 2 && out.some((p) => p.includePerformer)) break;
-    if (out.length >= DECK.MAX_PEOPLE && core.length >= 2) {
-      out.pop();
-    }
     if (out.length >= DECK.MAX_PEOPLE) break;
+    if (!a.id || seen.has(a.id) || NOT_A_SINGER.test(a.name)) continue;
     seen.add(a.id);
     out.push({
       personId: a.id,
       name: a.name,
       disambiguation: a.disambiguation,
-      role: "노래",
-      includePerformer: true,
+      role: PERFORMER_ROLE,
+      performer: true,
     });
   }
-
   return out;
 }
 
@@ -374,7 +373,8 @@ interface PersonState {
   disambiguation?: string;
   /** 이 인물을 만난 곡에서의 역할 */
   role: string;
-  includePerformer?: boolean;
+  /** 가수 축 인물 */
+  performer?: boolean;
   weight: number;
   fromTitle?: string;
   queue?: PersonItem[];
@@ -526,9 +526,9 @@ export class Deck {
     this.origin_ = o;
     this.titles.add(normalizeTitle(o.title));
     this.path = [{ kind: "song", id: o.id, label: o.title }];
-    const initialPeople = corePeople(o.credits, o.artists);
+    const initialPeople = seedPeople(o.credits, o.artists);
     for (const p of initialPeople) {
-      this.people.set(p.personId, { ...p, weight: WEIGHT.ORIGIN, exhausted: false });
+      this.people.set(p.personId, { ...p, weight: p.performer ? WEIGHT.PERFORMER : WEIGHT.ORIGIN, exhausted: false });
     }
     const originCard: DeckCard = {
       id: o.id,
@@ -619,20 +619,19 @@ export class Deck {
       if (ctl.signal.aborted) return;
       const already = new Set(card.via.map((v) => v.personId));
       const added: string[] = [];
-      for (const c of corePeople(d.credits, d.artists)) {
+      for (const c of seedPeople(d.credits, d.artists)) {
         if (already.has(c.personId)) continue; // 데려온 인물은 이미 더함
         const p = this.people.get(c.personId);
         if (p) {
           p.weight += WEIGHT.KEEP;
-          if (c.includePerformer) p.includePerformer = true;
         } else {
           this.people.set(c.personId, {
             personId: c.personId,
             name: c.name,
             disambiguation: c.disambiguation,
             role: c.role,
-            includePerformer: c.includePerformer,
-            weight: WEIGHT.KEEP,
+            performer: c.performer,
+            weight: c.performer ? WEIGHT.PERFORMER : WEIGHT.KEEP,
             fromTitle: card.title,
             exhausted: false,
           });
@@ -806,14 +805,13 @@ export class Deck {
         const items = (
           await getArtistCredits(p.personId, {
             ...opts,
-            includePerformer: p.includePerformer || p.role === "노래",
+            includePerformer: !!p.performer,
           })
         ).items;
         const fresh = items.filter((it) => !this.titles.has(normalizeTitle(it.title)));
         const same = fresh.filter((it) => it.roles.includes(p.role));
-        const coreRest = fresh.filter((it) => !it.roles.includes(p.role) && it.roles.some(isCoreRole));
-        const otherRest = fresh.filter((it) => !it.roles.includes(p.role) && !it.roles.some(isCoreRole));
-        const rest = [...coreRest, ...otherRest];
+        // 나머지는 핵심 역할(작곡·작사·편곡·프로듀서)로 참여한 곡만 (리믹서·보컬 디렉터·악기 등 제외)
+        const rest = fresh.filter((it) => !it.roles.includes(p.role) && it.roles.some(isCoreRole));
         p.queue = [...spread(same, DECK.PERSON_QUEUE_SAME_ROLE), ...spread(rest, DECK.PERSON_QUEUE_OTHER)];
       } catch {
         if (opts.signal.aborted) throw new AbortedError();
@@ -932,7 +930,13 @@ export class Deck {
     );
   }
 
+  /** 가수 축으로 데려온 카드(이유가 "X가 부른 다른 곡"): 후보가 전부 그 가수 곡이라 '같은 가수' 규칙을 적용하지 않는다 */
+  private isPerformerCard(c: DeckCard): boolean {
+    return c.via[0]?.role === PERFORMER_ROLE;
+  }
+
   private artistOk(c: DeckCard): boolean {
+    if (this.isPerformerCard(c)) return true;
     return !this.recentArtists.includes(c.primaryArtist);
   }
 
@@ -941,7 +945,7 @@ export class Deck {
     c.contrast = contrast;
     this.queue.push(c);
     this.served++;
-    this.recentArtists = [...this.recentArtists, c.primaryArtist].slice(-(DECK.ARTIST_WINDOW - 1));
+    if (!this.isPerformerCard(c)) this.recentArtists = [...this.recentArtists, c.primaryArtist].slice(-(DECK.ARTIST_WINDOW - 1));
   }
 
   /** 소리 방향 기준으로 후보 정렬 (소리 데이터를 아직 불러오는 중인 곡은 뒤로, 소리 데이터가 없는 곡은 중립 점수로 섞음) */

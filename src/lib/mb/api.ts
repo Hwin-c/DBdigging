@@ -533,7 +533,7 @@ export async function getArtistCredits(
   mbid: string,
   opts?: RunOptions & { includePerformer?: boolean },
 ): Promise<PersonDetail> {
-  const ck = `artist:v3:${mbid}`; // v3: 반주 제외·원곡 대표·가창 녹음(arid) 보충
+  const ck = `artist:v4:${mbid}`; // v4: 가창 녹음(arid)은 가수 축(includePerformer)일 때만 보충
   const hit = derived.get<PersonDetail>(ck);
   if (hit && (!opts?.includePerformer || hit.hasPerformerRecordings)) return hit;
   const detail = await fetchArtistCredits(mbid, opts);
@@ -581,9 +581,9 @@ async function fetchArtistCredits(
     }
   }
 
-  // 제작 크레딧(work-rels/recording-rels)이 기록되지 않은 노래도 추천 후보로 띄울 수 있도록,
-  // 가수·그룹이거나 연결된 제작 크레딧 곡이 적은 인물(<24곡)은 가창 녹음(arid:<mbid>)을 함께 모은다
-  const needPerformer = !!opts?.includePerformer || a.type === "Group" || byTitle.size < 24;
+  // 가수 축(핵심 크레딧이 하나도 없는 곡을 파고들 때)에서만 가창 녹음(arid:<mbid>)을 모은다.
+  // 작곡·작사·편곡·프로듀서 인물에게는 모으지 않는다: '같은 사람이 만든 곡'에 노래 곡이 섞이고 호출도 늘기 때문
+  const needPerformer = !!opts?.includePerformer;
   if (needPerformer) {
     try {
       const res = await mbGet<MbSearchResponse>(

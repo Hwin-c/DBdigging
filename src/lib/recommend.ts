@@ -1,4 +1,5 @@
 import { AbortedError } from "./cache";
+import { PERFORMER_ROLE, josaIga } from "./deck";
 import { getFeatures, sharedTraits, similarity, type AudioFeatures } from "./audio";
 import {
   getArtistCredits,
@@ -30,7 +31,6 @@ export interface Via {
   disambiguation?: string;
   /** 지금 곡에서 이 인물의 대표 역할 (예: 작곡) */
   role: string;
-  includePerformer?: boolean;
 }
 
 export interface Recommendation {
@@ -74,50 +74,30 @@ export function roleNoun(role: string): string {
 
 /**
  * 추천에 쓸 인물:
- * 1) 핵심 역할(작곡·작사·편곡·프로듀서) 참여자 우선
- * 2) 핵심 역할이 부족하면 나머지 크레딧 참여자도 포함
- * 3) 크레딧 미기록·일부 표기 곡도 추천할 수 있도록 가수(artists, 역할 "노래")를 함께 포함
+ * - 핵심 역할(작곡·작사·편곡·프로듀서) 참여자만
+ * - 핵심 크레딧이 0명일 때만 가수를 가수 축(역할 "노래")으로 쓴다
  */
 export function pickPeople(credits: PersonCredit[], artists: ArtistLite[] = []): Via[] {
   const seen = new Set<string>();
   const out: Via[] = [];
-  const core = credits.filter((c) => c.roles.some(isCoreRole));
-  const nonCore = credits.filter((c) => !c.roles.some(isCoreRole));
-
-  for (const c of [...core, ...nonCore]) {
+  for (const c of credits) {
     if (out.length >= MAX_PEOPLE) break;
-    if (seen.has(c.artist.id)) continue;
+    if (!c.roles.some(isCoreRole) || seen.has(c.artist.id)) continue;
     seen.add(c.artist.id);
     out.push({
       personId: c.artist.id,
       name: c.artist.name,
       disambiguation: c.artist.disambiguation,
-      role: c.roles.find(isCoreRole) ?? c.roles[0],
+      role: c.roles.find(isCoreRole)!,
     });
   }
-
+  if (out.length) return out;
   for (const a of artists) {
-    if (!a.id) continue;
-    const existing = out.find((p) => p.personId === a.id);
-    if (existing) {
-      existing.includePerformer = true;
-      continue;
-    }
-    if (out.length >= MAX_PEOPLE && core.length >= 2 && out.some((p) => p.includePerformer)) break;
-    if (out.length >= MAX_PEOPLE && core.length >= 2) {
-      out.pop();
-    }
     if (out.length >= MAX_PEOPLE) break;
+    if (!a.id || seen.has(a.id) || /^(various artists|\[unknown\]|\[anonymous\]|\[no artist\])$/i.test(a.name)) continue;
     seen.add(a.id);
-    out.push({
-      personId: a.id,
-      name: a.name,
-      disambiguation: a.disambiguation,
-      role: "노래",
-      includePerformer: true,
-    });
+    out.push({ personId: a.id, name: a.name, disambiguation: a.disambiguation, role: PERFORMER_ROLE });
   }
-
   return out;
 }
 
@@ -241,7 +221,7 @@ export class RecCollector {
           (
             await getArtistCredits(p.via.personId, {
               ...this.opts,
-              includePerformer: p.via.includePerformer || p.via.role === "노래",
+              includePerformer: p.via.role === PERFORMER_ROLE,
             })
           ).items,
           p.via,
@@ -346,7 +326,12 @@ export function reasonText(r: Recommendation): string[] {
     byId.set(v.personId, label);
     byRole.set(k, byId);
   }
-  for (const [noun, byId] of byRole) parts.push(`같은 ${noun} ${[...byId.values()].join("·")}`);
+  for (const [noun, byId] of byRole) {
+    const names = [...byId.values()];
+    // 가수 축: "볼빨간사춘기가 부른 다른 곡"
+    if (noun === "가수") parts.push(`${names.join("·")}${josaIga(names[names.length - 1])} 부른 다른 곡`);
+    else parts.push(`같은 ${noun} ${names.join("·")}`);
+  }
   if (r.similarity != null) parts.push(`소리 유사도 ${r.similarity.toFixed(2)}`);
   if (r.traits?.length) parts.push(r.traits[0]);
   return parts;
