@@ -22,7 +22,7 @@ function Sleeve({
 }) {
   const intent = dragIntent(drag);
   return (
-    <div className="relative mx-auto aspect-square w-[78%] max-w-[340px]">
+    <div className="relative mx-auto aspect-square w-[62%] max-w-[340px] md:w-[78%]">
       {/* 레코드 */}
       <div
         aria-hidden
@@ -142,7 +142,7 @@ export function SwipeCard({
         <Sleeve card={card} playing={playing} drag={drag} />
       </div>
 
-      <div className="mx-auto mt-7 w-[78%] max-w-[340px]">
+      <div className="mx-auto mt-5 w-full max-w-[340px] md:mt-7 md:w-[78%]">
         <div className="flex items-start gap-3">
           <div className="min-w-0 flex-1">
             <h2 className="break-words text-[26px] font-bold leading-[1.15] tracking-[-0.03em] text-black">

@@ -84,7 +84,9 @@ export function SwipeApp() {
   const joinedN = snap.joined?.n ?? 0;
   useEffect(() => {
     if (!snap.joined) return;
-    setToast({ text: snap.joined.names.map((n) => `+ ${n} 합류`).join("  "), n: snap.joined.n });
+    const names = snap.joined.names;
+    const shown = names.slice(0, 2).join(", ") + (names.length > 2 ? ` 외 ${names.length - 2}명` : "");
+    setToast({ text: `+ ${shown} 합류`, n: snap.joined.n });
     const t = setTimeout(() => setToast(null), JOIN_TOAST_MS);
     return () => clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -258,7 +260,7 @@ export function SwipeApp() {
                 aria-hidden
                 className={clsx("pointer-events-none absolute inset-x-0 top-0 z-10", `card-exit-${leaving.dir}`)}
               >
-                <div className="relative mx-auto aspect-square w-[78%] max-w-[340px]">
+                <div className="relative mx-auto aspect-square w-[62%] max-w-[340px] md:w-[78%]">
                   <Cover
                     releaseGroupId={leaving.card.releaseGroupId}
                     isrc={leaving.card.isrc}
