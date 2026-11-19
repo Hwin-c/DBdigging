@@ -97,6 +97,9 @@ export interface SearchHit {
   firstReleaseDate: string;
   releaseTitle: string;
   hasIsrc: boolean;
+  /** 이 녹음이 실린 발매 수 (원곡일수록 많다) */
+  releaseCount: number;
+  video: boolean;
   score: number;
 }
 
@@ -115,6 +118,8 @@ function toHit(r: MbSearchRecording): SearchHit {
     firstReleaseDate: r["first-release-date"] ?? "",
     releaseTitle: r.releases?.[0]?.title ?? "",
     hasIsrc: (r.isrcs?.length ?? 0) > 0,
+    releaseCount: r.releases?.length ?? 0,
+    video: !!r.video,
     score: r.score,
   };
 }
@@ -169,7 +174,11 @@ function splitCandidates(q: string): Array<[string, string]> {
   return out;
 }
 
-/** 결과 점수: 가수 일치·제목 일치·ISRC 가점, 질의에 없는 버전 표기 감점 */
+/**
+ * 결과 점수: 가수 일치·제목 일치·ISRC·발매 수 가점, 질의에 없는 버전 표기·괄호 표기·영상 감점.
+ * 실제 검색 응답에는 isrcs가 오지 않아(확인: Get Lucky 질의) 원곡 판별은 발매 수가 주로 맡는다.
+ * 예: Get Lucky 원곡 833f00e1은 발매 33개, 같은 제목의 다른 녹음은 대부분 1개.
+ */
 function relevance(h: SearchHit, q: string, splits: Array<[string, string]>): number {
   let s = matchCount(q, h) * 10;
   const names = new Set([normalizeLoose(h.artist), ...h.artistNames.map(normalizeLoose)]);
@@ -185,6 +194,11 @@ function relevance(h: SearchHit, q: string, splits: Array<[string, string]>): nu
   const vs = versionWords(`${h.title} ${h.disambiguation}`).filter((w) => !qWords.has(w));
   if (vs.length) s -= 50;
   if (h.hasIsrc) s += 8;
+  s += Math.min(25, Math.round(6 * Math.log2(1 + h.releaseCount)));
+  // 질의에 없는 괄호 표기 (예: "(DMC Hotmix)", "(Sundance version)")
+  const paren = h.title.match(/[([].*?[)\]]/g)?.join(" ") ?? "";
+  if (paren && matchCount(q, { ...h, title: paren, artist: "", artistNames: [] }) === 0) s -= 10;
+  if (h.video) s -= 30;
   if (h.disambiguation) s -= 1;
   return s;
 }
@@ -200,7 +214,7 @@ function rerank(hits: SearchHit[], q: string, splits: Array<[string, string]>): 
     .slice(0, 15);
 }
 
-async function runQuery(query: string, limit = 25): Promise<SearchHit[]> {
+async function runQuery(query: string, limit = 100): Promise<SearchHit[]> {
   const res = await mbGet<MbSearchResponse>("recording", { query, limit: String(limit) });
   return (res.recordings ?? []).map(toHit);
 }
