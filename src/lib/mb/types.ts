@@ -18,11 +18,35 @@ export interface MbArtistCredit {
   artist: MbArtistRef;
 }
 
+export interface MbReleaseGroupRef {
+  id: string;
+  title?: string;
+  "primary-type"?: string | null;
+  /** 예: ["Compilation"] (검색 응답에서 확인) */
+  "secondary-types"?: string[];
+}
+
 export interface MbReleaseRef {
   id: string;
   title: string;
   date?: string;
   status?: string | null;
+  /** 검색 응답에만 포함 (2026-11-19 rid·arid 검색으로 확인) */
+  "release-group"?: MbReleaseGroupRef;
+}
+
+/** 가수 검색 결과 (2026-11-19 "아이유" 검색으로 확인: aliases에 아이유·이지은 포함) */
+export interface MbSearchArtist {
+  id: string;
+  score: number;
+  name: string;
+  "sort-name": string;
+  aliases?: Array<{ name: string; "sort-name"?: string }>;
+}
+
+export interface MbArtistSearchResponse {
+  count: number;
+  artists: MbSearchArtist[];
 }
 
 export interface MbRecordingRef {

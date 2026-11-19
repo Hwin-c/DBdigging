@@ -1,4 +1,5 @@
 import { TwoLevelCache, type RunOptions } from "../cache";
+import { isBackingTrack, isVersionRecording } from "../filters";
 import { mbGet } from "./client";
 import type {
   MbArtistCredit,
@@ -6,6 +7,7 @@ import type {
   MbRecordingBrowse,
   MbRecordingLookup,
   MbRelation,
+  MbReleaseRef,
   MbSearchRecording,
   MbSearchResponse,
 } from "./types";
@@ -363,11 +365,8 @@ export interface PersonDetail {
   items: PersonItem[];
 }
 
-/** 녹음 버전 표기 중 대표곡에서 제외할 것 */
-const NON_ORIGINAL = /(inst|instrumental|mr|remix|live|karaoke|acoustic|ver\.|version|edit|mix|demo|sped|slowed|반주|라이브)/i;
-
 export async function getArtistCredits(mbid: string, opts?: RunOptions): Promise<PersonDetail> {
-  const ck = `artist:${mbid}`;
+  const ck = `artist:v2:${mbid}`; // v2: 반주 제외·원곡 대표 규칙 변경
   const hit = derived.get<PersonDetail>(ck);
   if (hit) return hit;
   const detail = await fetchArtistCredits(mbid, opts);
@@ -379,14 +378,20 @@ async function fetchArtistCredits(mbid: string, opts?: RunOptions): Promise<Pers
   const a = await mbGet<MbArtistLookup>(`artist/${mbid}`, { inc: "work-rels+recording-rels" }, opts);
   const byTitle = new Map<string, PersonItem>();
 
+  /** 같은 제목은 한 줄: 작품(원곡 대표를 따로 고름) 또는 버전 표기 없는 녹음을 대표로 */
   const add = (kind: PersonItem["kind"], id: string, title: string, dis: string, rel: MbRelation) => {
     const label = roleLabel(rel);
     const key = normalizeTitle(title) || id;
     const cur = byTitle.get(key);
+    const isVersion = kind === "recording" && isVersionRecording(title, dis);
     if (cur) {
       if (!cur.roles.includes(label)) cur.roles.push(label);
-      // 같은 제목이면 버전 표기 없는 녹음을 대표로
-      if (kind === "recording" && (cur.kind === "work" || (cur.disambiguation && !dis))) {
+      const curIsVersion = cur.kind === "recording" && isVersionRecording(cur.title, cur.disambiguation);
+      // 버전 녹음(Japanese Ver., Remix 등)은 작품·원곡 녹음이 있으면 대표가 될 수 없다
+      const better =
+        (curIsVersion && !isVersion) || // 원곡 녹음·작품이 버전 녹음을 대신
+        (kind === "recording" && !isVersion && cur.kind === "work"); // 원곡 녹음은 작품보다 바로 열 수 있어 우선
+      if (better) {
         cur.kind = kind;
         cur.id = id;
         cur.title = title;
@@ -402,16 +407,7 @@ async function fetchArtistCredits(mbid: string, opts?: RunOptions): Promise<Pers
       add("work", rel.work.id, rel.work.title, rel.work.disambiguation ?? "", rel);
     } else if (rel["target-type"] === "recording" && rel.recording && !rel.recording.video) {
       const dis = rel.recording.disambiguation ?? "";
-      if (NON_ORIGINAL.test(dis) || NON_ORIGINAL.test(rel.recording.title.replace(/^[^(]*/, ""))) {
-        // 리믹스·라이브 등 버전 녹음은 원곡이 따로 없을 때만 남긴다
-        const key = normalizeTitle(rel.recording.title);
-        if (byTitle.has(key)) {
-          const cur = byTitle.get(key)!;
-          const label = roleLabel(rel);
-          if (!cur.roles.includes(label)) cur.roles.push(label);
-          continue;
-        }
-      }
+      if (isBackingTrack(rel.recording.title, dis)) continue; // 반주 버전은 목록에서 뺀다
       add("recording", rel.recording.id, rel.recording.title, dis, rel);
     }
   }
@@ -489,7 +485,9 @@ export async function getRecordingLite(mbid: string, opts?: RunOptions): Promise
 function originalness(r: WorkRecording): number {
   let s = 0;
   if (r.video) s -= 10;
-  if (r.disambiguation) s -= NON_ORIGINAL.test(r.disambiguation) ? 4 : 1;
+  if (isBackingTrack(r.title, r.disambiguation)) s -= 20;
+  if (isVersionRecording(r.title, r.disambiguation)) s -= 6;
+  else if (r.disambiguation) s -= 1;
   if (/[([]/.test(r.title)) s -= 2;
   if (r.isrcs.length) s += 2;
   return s;
@@ -508,7 +506,7 @@ export async function resolveWorkToRecording(
   workId: string,
   opts?: RunOptions,
 ): Promise<WorkRecording | undefined> {
-  const ck = `work-rep:${workId}`;
+  const ck = `work-rep:v2:${workId}`;
   const hit = derived.get<WorkRecording | null>(ck);
   if (hit !== undefined) return hit ?? undefined;
   const rep = pickRepresentative(await getWorkRecordings(workId, opts));
@@ -543,4 +541,83 @@ export async function findIsrcFallback(
       (a.firstReleaseDate || "9999").localeCompare(b.firstReleaseDate || "9999"),
   );
   return { isrc: pool[0].isrcs[0], recording: pool[0] };
+}
+
+/* ───────────────────────── 녹음 묶음 조회 ───────────────────────── */
+
+export interface BatchRecording extends WorkRecording {
+  /** 커버용 앨범 묶음 (Cover Art Archive release-group) */
+  releaseGroupId?: string;
+}
+
+const RID_BATCH = 25;
+
+/**
+ * 여러 녹음을 검색 한 번(rid:(a OR b …))으로 조회해 가수·ISRC·앨범 묶음을 받는다.
+ * 검색 인덱스에 아직 없는 녹음은 하나씩 조회로 보충한다. 결과는 가공 캐시에 저장.
+ * (wid:는 녹음 검색 필드가 아니어서 작품은 묶을 수 없음 — 2026-11-19 확인)
+ */
+export async function lookupRecordings(ids: string[], opts?: RunOptions): Promise<Map<string, BatchRecording>> {
+  const out = new Map<string, BatchRecording>();
+  const need: string[] = [];
+  for (const id of new Set(ids)) {
+    const hit = derived.get<BatchRecording>(`rec:${id}`);
+    if (hit) out.set(id, hit);
+    else need.push(id);
+  }
+  for (let i = 0; i < need.length; i += RID_BATCH) {
+    const chunk = need.slice(i, i + RID_BATCH);
+    try {
+      const res = await mbGet<MbSearchResponse>(
+        "recording",
+        { query: `rid:(${chunk.join(" OR ")})`, limit: String(chunk.length) },
+        opts,
+      );
+      for (const r of res.recordings ?? []) {
+        const rec: BatchRecording = {
+          id: r.id,
+          title: r.title,
+          artist: creditText(r["artist-credit"]),
+          artistIds: (r["artist-credit"] ?? []).map((c) => c.artist.id),
+          disambiguation: r.disambiguation ?? "",
+          length: r.length ?? null,
+          firstReleaseDate: r["first-release-date"] ?? "",
+          isrcs: r.isrcs ?? [],
+          video: !!r.video,
+          releaseGroupId: pickReleaseGroup(r.releases ?? []),
+        };
+        out.set(r.id, rec);
+        derived.set(`rec:${r.id}`, rec);
+      }
+    } catch (e) {
+      if (opts?.signal?.aborted) throw e;
+      /* 아래에서 하나씩 보충 */
+    }
+  }
+  for (const id of need) {
+    if (out.has(id)) continue;
+    try {
+      const rec = await getRecordingLite(id, opts);
+      out.set(id, rec);
+    } catch (e) {
+      if (opts?.signal?.aborted) throw e;
+      /* 실패한 후보는 건너뜀 */
+    }
+  }
+  return out;
+}
+
+/** 커버로 쓸 앨범 묶음: Official·컴필레이션 아님·이른 발매 우선 */
+function pickReleaseGroup(releases: MbReleaseRef[]): string | undefined {
+  const scored = releases
+    .filter((r) => r["release-group"]?.id)
+    .map((r) => ({
+      id: r["release-group"]!.id,
+      s:
+        (r.status === "Official" ? 2 : 0) +
+        (r["release-group"]?.["secondary-types"]?.includes("Compilation") ? -3 : 0),
+      d: r.date || "9999",
+    }))
+    .sort((a, b) => b.s - a.s || a.d.localeCompare(b.d));
+  return scored[0]?.id;
 }

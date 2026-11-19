@@ -11,6 +11,8 @@ export interface PreviewResult {
   url: string;
   /** 원본 서비스 곡 페이지 */
   link: string;
+  /** 앨범 커버 (Deezer album.cover_medium/cover_big, 2026-11-19 응답 확인) */
+  cover?: string;
 }
 
 interface DeezerTrack {
@@ -18,6 +20,7 @@ interface DeezerTrack {
   title?: string;
   preview?: string;
   link?: string;
+  album?: { cover_medium?: string; cover_big?: string };
   error?: { type: string; message: string; code: number };
 }
 
@@ -55,7 +58,12 @@ function jsonp<T>(url: string, timeoutMs = 8000): Promise<T> {
 async function fromDeezer(isrc: string): Promise<PreviewResult | null> {
   const t = await jsonp<DeezerTrack>(`https://api.deezer.com/track/isrc:${encodeURIComponent(isrc)}`);
   if (t.error || !t.preview) return null;
-  return { source: "deezer", url: t.preview, link: t.link ?? `https://www.deezer.com/track/${t.id}` };
+  return {
+    source: "deezer",
+    url: t.preview,
+    link: t.link ?? `https://www.deezer.com/track/${t.id}`,
+    cover: t.album?.cover_big ?? t.album?.cover_medium,
+  };
 }
 
 interface ItunesResult {
@@ -122,6 +130,15 @@ export async function findPreview(opts: {
   }
 }
 
+/** 앨범 커버만 필요할 때: Deezer(ISRC)만 본다 (iTunes 호출 한도를 아끼기 위해) */
+export async function findCover(isrc: string): Promise<string | null> {
+  try {
+    return (await fromDeezer(isrc))?.cover ?? null;
+  } catch {
+    return null;
+  }
+}
+
 /* ───────────── 공유 오디오 요소: 한 번에 한 곡만 재생 ───────────── */
 
 export type PlayerState = { key: string | null; status: "idle" | "loading" | "playing" | "paused" };
@@ -177,6 +194,19 @@ export const player = {
       return null;
     }
     return p;
+  },
+  /**
+   * 이미 받아 둔 미리듣기를 바로 재생 (await 없이 play()를 불러야 모바일 자동재생 제한을 피한다).
+   * 스와이프·탭 이벤트 처리 안에서 부른다.
+   */
+  playNow(key: string, p: PreviewResult): void {
+    const a = getAudio();
+    a.pause();
+    emit({ key, status: "loading" });
+    a.src = p.url;
+    a.play().catch(() => {
+      if (state.key === key) emit({ key, status: "idle" });
+    });
   },
   toggle(key: string) {
     const a = getAudio();
