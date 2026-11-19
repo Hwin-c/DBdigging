@@ -2,11 +2,11 @@
 import clsx from "clsx";
 import { ExternalLink, Pause, Play } from "lucide-react";
 import type { AudioFeatures } from "@/lib/audio";
-import { reasonChip, simLevel, soundDiff, type DeckCard } from "@/lib/deck";
+import { reasonText, simLevel, soundDiff, type DeckCard, type Via } from "@/lib/deck";
 import { Cover } from "./Cover";
 import { SWIPE, dragIntent, useSwipe, type DragState, type SwipeDir } from "./useSwipe";
 
-const HINT: Record<SwipeDir, string> = { left: "넘기기", right: "담기", up: "더 파기" };
+const HINT: Record<SwipeDir, string> = { left: "넘기기", right: "담기" };
 
 /**
  * LP 한 장: 커버(슬리브) 뒤에 레코드가 숨어 있다가, 재생하면 오른쪽으로 빠져나와 돈다.
@@ -69,12 +69,47 @@ function Sleeve({
   );
 }
 
+/** 이유 문장. 인물 이름은 눌러서 집중할 수 있는 버튼 */
+function Reason({ v, focused, onFocus }: { v: Via; focused: boolean; onFocus: (id: string) => void }) {
+  const text = reasonText(v);
+  const i = text.indexOf(v.name);
+  const name = (
+    <button
+      type="button"
+      onClick={() => onFocus(v.personId)}
+      aria-pressed={focused}
+      title={focused ? `${v.name} 집중 해제` : `${v.name}에게 집중`}
+      className={clsx(
+        "rounded-full font-semibold underline decoration-[#C4C4C8] underline-offset-[3px] hover:decoration-black",
+        focused && "bg-black px-1.5 text-white no-underline",
+      )}
+    >
+      {v.name}
+    </button>
+  );
+  return (
+    <span className="inline-block rounded-full border border-[#E5E5E5] px-3 py-1.5 text-[13px] leading-[1.6] text-black">
+      {i >= 0 ? (
+        <>
+          {text.slice(0, i)}
+          {name}
+          {text.slice(i + v.name.length)}
+        </>
+      ) : (
+        text
+      )}
+    </span>
+  );
+}
+
 export function SwipeCard({
   card,
   base,
   status,
   onSwipe,
   onTap,
+  focusId,
+  onFocus,
 }: {
   card: DeckCard;
   /** 시작 곡 소리 특성 */
@@ -82,6 +117,9 @@ export function SwipeCard({
   status: "idle" | "loading" | "playing" | "paused";
   onSwipe: (dir: SwipeDir) => void;
   onTap: () => void;
+  focusId: string | null;
+  /** 인물 이름을 누르면 그 사람에게 집중 */
+  onFocus: (personId: string) => void;
 }) {
   const { drag, handlers } = useSwipe({ onSwipe, onTap });
   const playing = status === "playing";
@@ -99,8 +137,8 @@ export function SwipeCard({
         transition: drag.active ? "none" : "transform 220ms cubic-bezier(.2,.8,.2,1)",
       }}
     >
-      {/* 스와이프는 커버 영역에서만: 아래 글자 영역은 세로 스크롤이 그대로 된다 */}
-      <div {...handlers} className="cursor-grab touch-none select-none active:cursor-grabbing">
+      {/* 스와이프는 커버 영역에서 좌우만: pan-y로 세로 스크롤은 브라우저가 처리 */}
+      <div {...handlers} className="cursor-grab touch-pan-y select-none active:cursor-grabbing">
         <Sleeve card={card} playing={playing} drag={drag} />
       </div>
 
@@ -128,8 +166,8 @@ export function SwipeCard({
             <li className="rounded-full bg-black px-3 py-1.5 text-[13px] text-white">같은 사람, 다른 분위기</li>
           )}
           {card.via.map((v) => (
-            <li key={v.personId} className="rounded-full border border-[#E5E5E5] px-3 py-1.5 text-[13px] text-black">
-              {reasonChip(v)}
+            <li key={v.personId}>
+              <Reason v={v} focused={focusId === v.personId} onFocus={onFocus} />
             </li>
           ))}
         </ul>

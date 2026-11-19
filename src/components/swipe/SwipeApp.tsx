@@ -1,19 +1,32 @@
 "use client";
 import clsx from "clsx";
-import { ArrowUp, Bookmark, Loader2, X } from "lucide-react";
+import { Bookmark, Loader2, X } from "lucide-react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Deck, type DeckCard, type DeckSnapshot } from "@/lib/deck";
+import { Deck, SOUND_MODES, type DeckCard, type DeckSnapshot } from "@/lib/deck";
 import { loadNote, saveNote, topPeople, type NoteItem } from "@/lib/note";
 import { player, type PlayerState } from "@/lib/preview";
 import { SourceFooter } from "../dig/SourceFooter";
 import { Cover } from "./Cover";
 import { EXAMPLES } from "./examples";
+import { DigFlow } from "./DigFlow";
 import { StartScreen, type FloatingSong } from "./StartScreen";
 import { SwipeCard } from "./SwipeCard";
 import type { SwipeDir } from "./useSwipe";
 
-const EMPTY: DeckSnapshot = { trail: [], queue: [], progress: { phase: "idle", done: 0, total: 0 }, error: null };
+const EMPTY: DeckSnapshot = {
+  queue: [],
+  people: [],
+  path: [],
+  focusId: null,
+  mode: "similar",
+  joined: null,
+  progress: { phase: "idle", done: 0, total: 0 },
+  error: null,
+};
+
+/** "+ 이름 합류" 알림 표시 시간 (ms) */
+const JOIN_TOAST_MS = 2600;
 
 function usePlayer(): PlayerState {
   const [s, setS] = useState<PlayerState>(player.state);
@@ -37,6 +50,7 @@ export function SwipeApp() {
   const [snap, setSnap] = useState<DeckSnapshot>(EMPTY);
   const [note, setNote] = useState<NoteItem[]>([]);
   const [leaving, setLeaving] = useState<{ card: DeckCard; dir: SwipeDir; n: number } | null>(null);
+  const [toast, setToast] = useState<{ text: string; n: number } | null>(null);
   /** 한 번이라도 재생했으면 넘길 때 다음 곡을 이어서 재생 */
   const soundOn = useRef(false);
   const ps = usePlayer();
@@ -60,11 +74,21 @@ export function SwipeApp() {
   useEffect(() => {
     const d = deckRef.current;
     if (!d || !dig) return;
-    if (startedFor.current === dig || d.origin?.id === dig) return;
+    if (startedFor.current === dig) return;
     startedFor.current = dig;
     player.stop();
     void d.start(dig);
   }, [dig]);
+
+  // 담은 곡에서 새 사람이 합류하면 잠깐 알림
+  const joinedN = snap.joined?.n ?? 0;
+  useEffect(() => {
+    if (!snap.joined) return;
+    setToast({ text: snap.joined.names.map((n) => `+ ${n} 합류`).join("  "), n: snap.joined.n });
+    const t = setTimeout(() => setToast(null), JOIN_TOAST_MS);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [joinedN]);
 
   const start = useCallback(
     (s: { id: string }) => {
@@ -76,7 +100,7 @@ export function SwipeApp() {
   );
 
   const card = snap.queue[0];
-  const origin = snap.trail[snap.trail.length - 1];
+  const origin = snap.origin;
 
   const playCard = useCallback((c: DeckCard | undefined) => {
     if (!c) return;
@@ -93,6 +117,7 @@ export function SwipeApp() {
     else playCard(card);
   }, [card, playCard]);
 
+  /** 왼쪽 넘기기 · 오른쪽 담기(저장 + 방향) */
   const act = useCallback(
     (dir: SwipeDir) => {
       const d = deckRef.current;
@@ -117,9 +142,8 @@ export function SwipeApp() {
           saveNote(next);
           return next;
         });
-      }
-      if (dir === "up") void d.deeper(c);
-      else d.advance();
+        d.keep();
+      } else d.skip();
       // 다음 카드를 같은 이벤트 처리 안에서 재생 (모바일 자동재생 제한)
       const next = d.snapshot().queue[0];
       if (soundOn.current && next) playCard(next);
@@ -128,7 +152,7 @@ export function SwipeApp() {
     [playCard],
   );
 
-  // 키보드: ← 넘기기, → 담기, ↑ 더 파기, Space 재생/정지
+  // 키보드: ← 넘기기, → 담기, Space 재생/정지
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const t = e.target as HTMLElement | null;
@@ -136,7 +160,6 @@ export function SwipeApp() {
       if (!deckRef.current?.snapshot().queue[0]) return;
       if (e.key === "ArrowLeft") act("left");
       else if (e.key === "ArrowRight") act("right");
-      else if (e.key === "ArrowUp") act("up");
       else if (e.key === " " && !(t && (t.tagName === "BUTTON" || t.tagName === "A"))) toggle();
       else return;
       e.preventDefault();
@@ -165,6 +188,7 @@ export function SwipeApp() {
       return next;
     });
 
+  const focus = useCallback((id: string | null) => deckRef.current?.focus(id), []);
   const listHref = `/?view=list${origin ? `&rec=${origin.id}` : ""}`;
 
   return (
@@ -204,40 +228,27 @@ export function SwipeApp() {
 
       {dig && (
         <main className="mx-auto w-full max-w-[520px] px-4 pb-6">
-          {/* 디깅 경로 */}
-          {snap.trail.length > 0 && (
-            <nav aria-label="디깅 경로" className="-mx-4 overflow-x-auto px-4 pb-2">
-              <ol className="flex w-max items-center gap-1.5 text-[13px]">
-                {snap.trail.map((o, i) => {
-                  const last = i === snap.trail.length - 1;
-                  return (
-                    <li key={`${o.id}-${i}`} className="flex items-center gap-1.5">
-                      {i > 0 && <span className="text-[#C4C4C8]">/</span>}
-                      <button
-                        type="button"
-                        disabled={last}
-                        onClick={() => {
-                          player.stop();
-                          void deckRef.current?.jumpTo(i);
-                        }}
-                        className={clsx(
-                          "min-h-[36px] max-w-[180px] truncate rounded-full px-3",
-                          last ? "bg-black text-white" : "bg-[#F2F2F2] text-black hover:bg-[#E5E5E5]",
-                        )}
-                      >
-                        {o.title}
-                      </button>
-                    </li>
-                  );
-                })}
-              </ol>
-            </nav>
-          )}
+          <DigFlow snap={snap} onFocus={focus} />
+
+          {/* 소리 방향: 대기열 정렬 기준만 바꾼다 */}
           {origin && (
-            <p className="mt-1 text-[13px] text-[#6E6E73]">
-              시작 곡 {origin.title}, {origin.artist}
-              {origin.isrcBorrowed && origin.features ? " (소리는 다른 녹음 기준)" : ""}
-            </p>
+            <div role="radiogroup" aria-label="소리 방향" className="mt-4 flex gap-1 rounded-full bg-[#F2F2F2] p-1">
+              {SOUND_MODES.map((m) => (
+                <button
+                  key={m.id}
+                  type="button"
+                  role="radio"
+                  aria-checked={snap.mode === m.id}
+                  onClick={() => deckRef.current?.setMode(m.id)}
+                  className={clsx(
+                    "min-h-[36px] flex-1 rounded-full px-2 text-[13px]",
+                    snap.mode === m.id ? "bg-white font-semibold text-black shadow-[0_1px_2px_rgba(0,0,0,0.12)]" : "text-[#6E6E73] hover:text-black",
+                  )}
+                >
+                  {m.label}
+                </button>
+              ))}
+            </div>
           )}
 
           <div className="relative mt-6 min-h-[520px]">
@@ -245,10 +256,7 @@ export function SwipeApp() {
               <div
                 key={leaving.n}
                 aria-hidden
-                className={clsx(
-                  "pointer-events-none absolute inset-x-0 top-0 z-10",
-                  `card-exit-${leaving.dir}`,
-                )}
+                className={clsx("pointer-events-none absolute inset-x-0 top-0 z-10", `card-exit-${leaving.dir}`)}
               >
                 <div className="relative mx-auto aspect-square w-[78%] max-w-[340px]">
                   <Cover
@@ -264,6 +272,16 @@ export function SwipeApp() {
               </div>
             )}
 
+            {toast && (
+              <div
+                key={toast.n}
+                role="status"
+                className="toast-in pointer-events-none absolute inset-x-0 top-2 z-20 mx-auto w-max max-w-[90%] rounded-full bg-black px-4 py-2 text-center text-[14px] font-semibold text-white"
+              >
+                {toast.text}
+              </div>
+            )}
+
             {card && (
               <SwipeCard
                 key={card.id}
@@ -272,6 +290,8 @@ export function SwipeApp() {
                 status={ps.key === card.id ? ps.status : "idle"}
                 onSwipe={act}
                 onTap={toggle}
+                focusId={snap.focusId}
+                onFocus={(id) => focus(id)}
               />
             )}
 
@@ -287,15 +307,27 @@ export function SwipeApp() {
 
             {!card && snap.progress.phase === "exhausted" && !snap.error && (
               <div className="flex min-h-[420px] flex-col items-center justify-center gap-3 px-6 text-center">
-                <p className="text-[18px] font-semibold tracking-[-0.02em]">이 출발점에서 볼 곡을 다 봤어요</p>
-                <p className="text-[14px] text-[#6E6E73]">경로에서 이전 곡을 누르거나, 다른 곡으로 새로 시작하세요.</p>
-                <button
-                  type="button"
-                  onClick={() => router.push("/")}
-                  className="mt-2 min-h-[44px] rounded-full bg-black px-5 text-[15px] font-semibold text-white"
-                >
-                  새 곡으로 시작
-                </button>
+                <p className="text-[18px] font-semibold tracking-[-0.02em]">이 사람들의 곡을 다 봤어요</p>
+                <p className="text-[14px] text-[#6E6E73]">
+                  {snap.focusId ? "집중을 풀면 다른 사람 곡이 이어서 나와요." : "다른 곡으로 새로 시작해 보세요."}
+                </p>
+                {snap.focusId ? (
+                  <button
+                    type="button"
+                    onClick={() => focus(null)}
+                    className="mt-2 min-h-[44px] rounded-full bg-black px-5 text-[15px] font-semibold text-white"
+                  >
+                    집중 풀기
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => router.push("/")}
+                    className="mt-2 min-h-[44px] rounded-full bg-black px-5 text-[15px] font-semibold text-white"
+                  >
+                    새 곡으로 시작
+                  </button>
+                )}
               </div>
             )}
 
@@ -304,7 +336,7 @@ export function SwipeApp() {
                 <p className="text-[16px] font-semibold">{snap.error}</p>
                 <button
                   type="button"
-                  onClick={() => deckRef.current?.retry()}
+                  onClick={() => (origin ? deckRef.current?.retry() : dig && deckRef.current?.start(dig))}
                   className="min-h-[44px] rounded-full bg-black px-5 text-[15px] font-semibold text-white"
                 >
                   다시 시도
@@ -314,11 +346,10 @@ export function SwipeApp() {
           </div>
 
           {/* 조작 버튼: 항상 표시 */}
-          <div className="mt-6 flex items-start justify-center gap-6">
+          <div className="mt-6 flex items-start justify-center gap-10">
             {(
               [
                 { dir: "left", label: "넘기기", key: "←", icon: X, primary: false },
-                { dir: "up", label: "더 파기", key: "↑", icon: ArrowUp, primary: false },
                 { dir: "right", label: "담기", key: "→", icon: Bookmark, primary: true },
               ] as const
             ).map((b) => (
@@ -327,7 +358,7 @@ export function SwipeApp() {
                 type="button"
                 disabled={!card}
                 onClick={() => act(b.dir)}
-                className="group flex w-16 flex-col items-center gap-1.5 disabled:opacity-30"
+                className="group flex w-20 flex-col items-center gap-1.5 disabled:opacity-30"
               >
                 <span
                   className={clsx(
@@ -342,8 +373,11 @@ export function SwipeApp() {
               </button>
             ))}
           </div>
+          <p className="mt-3 text-center text-[12px] leading-relaxed text-[#9A9A9E]">
+            담으면 그 곡을 만든 사람들이 합류해 다음 카드가 그쪽으로 기울어요.
+          </p>
           {card && snap.progress.phase === "collect" && (
-            <p className="mt-4 text-center text-[12px] text-[#9A9A9E]">{progressText(snap)}</p>
+            <p className="mt-1 text-center text-[12px] text-[#9A9A9E]">{progressText(snap)}</p>
           )}
         </main>
       )}

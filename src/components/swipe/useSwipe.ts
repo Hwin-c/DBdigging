@@ -5,8 +5,6 @@ import { useCallback, useRef, useState } from "react";
 export const SWIPE = {
   /** 좌우로 이만큼 끌면 넘기기·담기 */
   X: 96,
-  /** 위로 이만큼 끌면 더 파기 */
-  Y: 96,
   /** 이보다 적게 움직이면 탭 */
   TAP: 8,
   /** 빠르게 튕기면 거리가 짧아도 인정 (속도, 최소 거리) */
@@ -16,7 +14,7 @@ export const SWIPE = {
   ROTATE: 0.05,
 } as const;
 
-export type SwipeDir = "left" | "right" | "up";
+export type SwipeDir = "left" | "right";
 
 export interface DragState {
   x: number;
@@ -26,10 +24,7 @@ export interface DragState {
 
 /** 끄는 중인 방향 (힌트 표시용) */
 export function dragIntent(d: DragState): SwipeDir | null {
-  const ax = Math.abs(d.x);
-  const up = -d.y;
-  if (up > ax && up > SWIPE.Y * 0.4) return "up";
-  if (ax > SWIPE.X * 0.4) return d.x > 0 ? "right" : "left";
+  if (Math.abs(d.x) > SWIPE.X * 0.4 && Math.abs(d.x) > Math.abs(d.y)) return d.x > 0 ? "right" : "left";
   return null;
 }
 
@@ -81,11 +76,9 @@ export function useSwipe(opts: {
         onTap();
         return;
       }
-      const up = -dy;
-      const flickY = up / dt > SWIPE.FLICK_VELOCITY && up > SWIPE.FLICK_MIN;
       const flickX = Math.abs(dx) / dt > SWIPE.FLICK_VELOCITY && Math.abs(dx) > SWIPE.FLICK_MIN;
-      if (up > Math.abs(dx) && (up > SWIPE.Y || flickY)) onSwipe("up");
-      else if (Math.abs(dx) >= up && (Math.abs(dx) > SWIPE.X || flickX)) onSwipe(dx > 0 ? "right" : "left");
+      // 좌우만: 세로로 더 많이 움직였으면 무시
+      if (Math.abs(dx) >= Math.abs(dy) && (Math.abs(dx) > SWIPE.X || flickX)) onSwipe(dx > 0 ? "right" : "left");
     },
     [onSwipe, onTap, reset],
   );

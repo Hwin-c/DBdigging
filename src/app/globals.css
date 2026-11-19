@@ -74,9 +74,6 @@ body {
 .card-exit-right {
   animation: exit-right 240ms ease-in forwards;
 }
-.card-exit-up {
-  animation: exit-up 240ms ease-in forwards;
-}
 @keyframes exit-left {
   to {
     transform: translate3d(-120%, 20px, 0) rotate(-12deg);
@@ -89,9 +86,21 @@ body {
     opacity: 0;
   }
 }
-@keyframes exit-up {
-  to {
-    transform: translate3d(0, -110%, 0);
+/* "+ 이름 합류" 알림 */
+.toast-in {
+  animation: toast-in 2.6s ease forwards;
+}
+@keyframes toast-in {
+  0% {
+    opacity: 0;
+    transform: translate3d(0, 6px, 0);
+  }
+  10%,
+  80% {
+    opacity: 1;
+    transform: none;
+  }
+  100% {
     opacity: 0;
   }
 }
@@ -101,9 +110,11 @@ body {
   .float-cover {
     animation: none;
   }
+  .toast-in {
+    animation: none;
+  }
   .card-exit-left,
-  .card-exit-right,
-  .card-exit-up {
+  .card-exit-right {
     animation: none;
     opacity: 0;
   }

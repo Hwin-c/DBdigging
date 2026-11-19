@@ -20,16 +20,26 @@ import { findPreview, type PreviewResult } from "./preview";
 export const DECK = {
   /** 화면에 보일 카드 대기열 최소 장수 */
   QUEUE_MIN: 3,
-  /** 대기열 뒤에 다양성 선택용으로 더 모아 둘 후보 수 */
+  /** 대기열 뒤에 선택용으로 더 모아 둘 후보 수 */
   POOL_EXTRA: 3,
-  /** 다양성 규칙 때문에 대기 중인 후보를 최대 몇 개까지 쌓을지 */
+  /** 대기 중인 후보를 최대 몇 개까지 쌓을지 */
   POOL_MAX: 12,
+  /** 비중이 큰 새 인물 후보를 모을 때는 이만큼까지 더 쌓는다 */
+  POOL_HARD_MAX: 24,
+  /**
+   * 아직 후보가 없는 인물들의 비중 합이 전체의 이 비율 이상이면,
+   * 카드가 1장 이상 남아 있는 동안 그 인물 후보를 기다렸다가 채운다 (담은 방향이 바로 느껴지도록)
+   */
+  WAIT_SHARE: 0.4,
   /** 미리듣기 주소를 미리 받아 둘 앞쪽 카드 수 (모바일에서 스와이프 중 바로 재생하기 위함) */
   PREFETCH: 2,
-  /** 시작 곡 크레딧에서 쓸 최대 인물 수 */
+  /** 한 곡의 크레딧에서 데려올 최대 인물 수 */
   MAX_PEOPLE: 6,
-  /** 한 회차에 새로 읽을 인물 크레딧 수 */
+  /** 한 회차에 비중 비례로 뽑을 인물 수 */
+  ROUND_PEOPLE: 3,
+  /** 한 회차에 새로 읽을 인물 크레딧 수 (평소 / 새로 합류한 인물을 서둘러 읽을 때) */
   CREDITS_PER_ROUND: 1,
+  CREDITS_PER_ROUND_RUSH: 2,
   /** 한 번에 인물 1명당 조회할 후보 수 */
   ROUND_PER_PERSON: 2,
   /** 인물 1명당 후보 대기열 길이 (같은 역할 곡 + 나머지) */
@@ -43,6 +53,20 @@ export const DECK = {
   SEEN_MAX: 3000,
 } as const;
 
+/** 사람별 비중 */
+export const WEIGHT = {
+  /** 시작 곡 크레딧 인물 */
+  ORIGIN: 1.0,
+  /** 담은 곡의 크레딧 인물에 더하는 값 (새 인물은 이 값으로 합류) */
+  KEEP: 1.0,
+  /** 넘긴 카드를 데려온 인물에서 빼는 값 */
+  SKIP: 0.3,
+  /** 비중 최솟값 (0이 되어 영영 안 나오는 일을 막음) */
+  MIN: 0.2,
+  /** 집중 중인 인물의 비중 배수 */
+  FOCUS: 8,
+} as const;
+
 export const SOUND = {
   /** energy·valence·danceability·acousticness 차이 기준 */
   DIFF: 0.15,
@@ -54,15 +78,26 @@ export const SOUND = {
   SIM_SIMILAR: 0.7,
 } as const;
 
+/** 소리 방향: 대기열 정렬 기준만 바꾼다 */
+export type SoundMode = "similar" | "energetic" | "calm" | "new";
+export const SOUND_MODES: Array<{ id: SoundMode; label: string }> = [
+  { id: "similar", label: "비슷하게" },
+  { id: "energetic", label: "더 신나게" },
+  { id: "calm", label: "더 잔잔하게" },
+  { id: "new", label: "새롭게" },
+];
+
 /* ───────────── 타입 ───────────── */
 
 export interface Via {
   personId: string;
   name: string;
-  /** 시작 곡에서의 역할 */
+  /** 이 인물을 만난 곡에서의 역할 */
   originRole: string;
   /** 이 곡에서의 역할 */
   role: string;
+  /** 이 인물을 만난 담은 곡 (시작 곡 인물이면 없음) */
+  fromTitle?: string;
 }
 
 export interface Origin {
@@ -86,8 +121,6 @@ export interface DeckCard {
   isrc?: string;
   releaseGroupId?: string;
   via: Via[];
-  originId: string;
-  originTitle: string;
   /** undefined: 확인 중, null: 없음 */
   features?: AudioFeatures | null;
   /** '같은 사람, 다른 분위기' 카드 */
@@ -103,9 +136,27 @@ export interface DeckProgress {
   total: number;
 }
 
+/** 지금 파는 사람 */
+export interface DiggingPerson {
+  id: string;
+  name: string;
+  weight: number;
+  /** 이 사람을 만난 담은 곡 (시작 곡 인물이면 없음) */
+  fromTitle?: string;
+}
+
+/** 디깅 경로: 곡과 사람이 번갈아 */
+export type PathStep = { kind: "song"; id: string; label: string } | { kind: "person"; id: string; label: string };
+
 export interface DeckSnapshot {
-  trail: Origin[];
+  origin?: Origin;
   queue: DeckCard[];
+  people: DiggingPerson[];
+  path: PathStep[];
+  focusId: string | null;
+  mode: SoundMode;
+  /** 마지막으로 합류한 사람들 (n이 바뀌면 새 알림) */
+  joined: { names: string[]; n: number } | null;
   progress: DeckProgress;
   error: string | null;
 }
@@ -129,14 +180,6 @@ function saveSeen(list: string[]) {
     localStorage.setItem(SEEN_KEY, JSON.stringify(list.slice(-DECK.SEEN_MAX)));
   } catch {
     /* 저장 실패는 무시 */
-  }
-}
-
-export function clearSeen() {
-  try {
-    localStorage.removeItem(SEEN_KEY);
-  } catch {
-    /* 무시 */
   }
 }
 
@@ -171,16 +214,37 @@ export function simLevel(base: AudioFeatures, f: AudioFeatures): SimLevel {
   return s >= SOUND.SIM_VERY ? "매우 비슷" : s >= SOUND.SIM_SIMILAR ? "비슷" : "다른 분위기";
 }
 
-/** 이유 칩: "{인물} {역할} · 시작 곡과 같은 {역할}" */
-export function reasonChip(v: Via): string {
+/** 받침 있으면 "이", 없으면 "가" (한글이 아니면 "가") */
+export function josaIga(word: string): string {
+  const code = word.charCodeAt(word.length - 1) - 0xac00;
+  return code >= 0 && code < 11172 && code % 28 !== 0 ? "이" : "가";
+}
+
+/**
+ * 이유 문장.
+ * - 시작 곡 인물: "Kenzie 작곡 · 시작 곡과 같은 작곡"
+ * - 담은 곡에서 만난 인물: "Supernova에서 만난 Dem Jointz가 작곡"
+ */
+export function reasonText(v: Via): string {
+  if (v.fromTitle) return `${v.fromTitle}에서 만난 ${v.name}${josaIga(v.name)} ${v.role}`;
   return v.role === v.originRole
     ? `${v.name} ${v.role} · 시작 곡과 같은 ${v.role}`
     : `${v.name} ${v.role} · 시작 곡에선 ${v.originRole}`;
 }
 
-export function coverUrl(c: { preview?: PreviewResult | null; releaseGroupId?: string }): string | undefined {
-  if (c.releaseGroupId) return `https://coverartarchive.org/release-group/${c.releaseGroupId}/front-250`;
-  return c.preview?.cover ?? undefined;
+/** 소리 방향별 정렬 점수 (클수록 앞). 소리 데이터가 없으면 null */
+export function modeScore(mode: SoundMode, base: AudioFeatures | null | undefined, f: AudioFeatures | null | undefined) {
+  if (!f) return null;
+  switch (mode) {
+    case "energetic":
+      return f.energy + 0.5 * f.danceability + 0.3 * Math.min(f.tempo / 200, 1);
+    case "calm":
+      return -f.energy + 0.5 * f.acousticness - 0.3 * Math.min(f.tempo / 200, 1);
+    case "new":
+      return base ? 1 - similarity(base, f) : null;
+    default:
+      return base ? similarity(base, f) : null;
+  }
 }
 
 /* ───────────── 시작 곡 ───────────── */
@@ -212,7 +276,7 @@ export async function loadOrigin(id: string): Promise<Origin> {
   };
 }
 
-function pickPeople(credits: PersonCredit[]): Array<{ personId: string; name: string; role: string }> {
+function corePeople(credits: PersonCredit[]): Array<{ personId: string; name: string; role: string }> {
   const core = credits.filter((c) => c.roles.some(isCoreRole));
   const pool = core.length ? core : credits;
   return pool.slice(0, DECK.MAX_PEOPLE).map((c) => ({
@@ -231,10 +295,25 @@ function spread<T>(list: T[], n: number): T[] {
   return out;
 }
 
+/** 비중에 비례해 하나 뽑기 */
+function weightedPick<T>(items: T[], w: (t: T) => number): T | undefined {
+  const total = items.reduce((s, x) => s + Math.max(0, w(x)), 0);
+  if (!items.length || total <= 0) return items[0];
+  let r = Math.random() * total;
+  for (const x of items) {
+    r -= Math.max(0, w(x));
+    if (r <= 0) return x;
+  }
+  return items[items.length - 1];
+}
+
 interface PersonState {
   personId: string;
   name: string;
+  /** 이 인물을 만난 곡에서의 역할 */
   role: string;
+  weight: number;
+  fromTitle?: string;
   queue?: PersonItem[];
   exhausted: boolean;
 }
@@ -243,22 +322,24 @@ interface PersonState {
 
 /**
  * 스와이프 카드 대기열.
- * - 시작 곡 크레딧 인물들을 돌아가며 후보를 조금씩 모으고(점진), 1장이라도 준비되면 바로 보여 준다
- * - 녹음 후보는 rid 검색 한 번으로 묶어 조회 (작품 후보는 1건씩, 캐시)
- * - 다양성: 인물별 번갈아, 같은 가수는 연속 ARTIST_WINDOW장 안에 1곡, CONTRAST_EVERY장마다 '다른 분위기' 카드
+ * - 사람별 비중: 시작 곡 크레딧 인물 1.0. 담으면 그 곡의 크레딧 인물 +1.0(새 인물은 합류), 넘기면 데려온 인물 −0.3
+ * - 다음 후보 인물은 비중에 비례해 뽑는다. 집중 중이면 그 사람 비중 × FOCUS
+ * - 후보는 점진적으로 모으고(1장이라도 준비되면 표시), 녹음은 rid 검색 한 번으로 묶어 조회
+ * - 다양성: 같은 가수는 연속 ARTIST_WINDOW장 안에 1곡, CONTRAST_EVERY장마다 '다른 분위기' 카드
+ * - 소리 방향(비슷하게/더 신나게/더 잔잔하게/새롭게)은 대기열 정렬 기준만 바꾼다
  * - 제외: 이미 본 곡, 시작 곡과 같은 작품, 같은 제목(커버·버전), 반주 버전
  */
 export class Deck {
-  private trail: Origin[] = [];
+  private origin_: Origin | undefined;
   private queue: DeckCard[] = [];
   private pool: DeckCard[] = [];
-  private people: PersonState[] = [];
-  private personPtr = 0;
-  private pickPtr = 0;
+  private people = new Map<string, PersonState>();
+  private path: PathStep[] = [];
+  private focusId: string | null = null;
+  private mode: SoundMode = "similar";
+  private joined: { names: string[]; n: number } | null = null;
   private served = 0;
-  /** 소리 데이터가 늦어 미뤄진 '다른 분위기' 카드 수 */
   private contrastDebt = 0;
-  private lastPerson: string | undefined;
   private recentArtists: string[] = [];
   private titles = new Set<string>();
   private seen: Set<string>;
@@ -286,8 +367,16 @@ export class Deck {
 
   snapshot(): DeckSnapshot {
     return {
-      trail: [...this.trail],
+      origin: this.origin_,
       queue: this.queue.map((c) => ({ ...c, via: [...c.via] })),
+      people: [...this.people.values()]
+        .filter((p) => !p.exhausted || p.weight > WEIGHT.MIN)
+        .map((p) => ({ id: p.personId, name: p.name, weight: p.weight, fromTitle: p.fromTitle }))
+        .sort((a, b) => b.weight - a.weight),
+      path: [...this.path],
+      focusId: this.focusId,
+      mode: this.mode,
+      joined: this.joined,
       progress: { ...this.progress },
       error: this.error,
     };
@@ -299,7 +388,7 @@ export class Deck {
   }
 
   get origin(): Origin | undefined {
-    return this.trail[this.trail.length - 1];
+    return this.origin_;
   }
 
   dispose() {
@@ -307,76 +396,34 @@ export class Deck {
     this.listeners.clear();
   }
 
+  private effWeight(p: PersonState): number {
+    return p.weight * (this.focusId === p.personId ? WEIGHT.FOCUS : 1);
+  }
+
   /** 새 시작 곡으로 처음부터 */
   async start(id: string) {
-    this.queue = [];
-    this.trail = [];
-    this.recentArtists = [];
-    this.served = 0;
-    this.contrastDebt = 0;
-    await this.setOrigin(id, true);
-  }
-
-  /** 이 카드에서 더 파기: 기존 대기열은 그대로 두고, 새 출발점 후보를 뒤에서 모은다 */
-  async deeper(card: DeckCard) {
-    this.markSeen(card.id);
-    this.queue = this.queue.filter((c) => c.id !== card.id);
-    await this.setOrigin(card.id, false);
-  }
-
-  /** 경로의 i번째 시작 곡으로 돌아가기 */
-  async jumpTo(i: number) {
-    const target = this.trail[i];
-    if (!target) return;
-    this.trail = this.trail.slice(0, i);
-    this.queue = [];
-    this.recentArtists = [];
-    this.served = 0;
-    await this.setOrigin(target.id, true, target);
-  }
-
-  /** 맨 앞 카드 처리(넘기기·담기). 이미 본 곡으로 기록하고 다음 카드로 */
-  advance(): DeckCard | undefined {
-    const card = this.queue.shift();
-    if (card) this.markSeen(card.id);
-    this.fillQueue();
-    this.prefetch();
-    this.emit();
-    void this.collect();
-    return card;
-  }
-
-  /** 캐시를 비우지 않고, 이 출발점 후보를 다시 모은다 (이미 본 곡 기록은 유지) */
-  retry() {
-    this.error = null;
-    if (this.origin && this.people.length === 0) void this.setOrigin(this.origin.id, true, this.origin);
-    else void this.collect();
-  }
-
-  private markSeen(id: string) {
-    if (this.seen.has(id)) return;
-    this.seen.add(id);
-    this.seenList.push(id);
-    saveSeen(this.seenList);
-  }
-
-  private async setOrigin(id: string, reset: boolean, known?: Origin) {
     this.ctl?.abort();
     const ctl = new AbortController();
     this.ctl = ctl;
+    this.origin_ = undefined;
+    this.queue = [];
+    this.pool = [];
+    this.people = new Map();
+    this.path = [];
+    this.focusId = null;
+    this.joined = null;
+    this.recentArtists = [];
+    this.served = 0;
+    this.contrastDebt = 0;
+    this.titles = new Set();
     this.error = null;
     this.exhausted = false;
-    this.pool = [];
-    this.people = [];
-    this.personPtr = 0;
-    this.pickPtr = 0;
-    if (reset) this.titles = new Set();
     this.progress = { phase: "origin", done: 0, total: 1 };
     this.emit();
 
     let o: Origin;
     try {
-      o = known ?? (await loadOrigin(id));
+      o = await loadOrigin(id);
     } catch (e) {
       if (ctl.signal.aborted) return;
       this.error = e instanceof Error ? e.message : "시작 곡을 불러오지 못했습니다.";
@@ -385,10 +432,13 @@ export class Deck {
       return;
     }
     if (ctl.signal.aborted) return;
-    this.trail = [...this.trail, o];
+    this.origin_ = o;
     this.titles.add(normalizeTitle(o.title));
-    this.people = pickPeople(o.credits).map((p) => ({ ...p, exhausted: false }));
-    if (!this.people.length) this.exhausted = true;
+    this.path = [{ kind: "song", id: o.id, label: o.title }];
+    for (const p of corePeople(o.credits)) {
+      this.people.set(p.personId, { ...p, weight: WEIGHT.ORIGIN, exhausted: false });
+    }
+    if (!this.people.size) this.exhausted = true;
     this.emit();
 
     // 시작 곡 소리 특성은 기다리지 않고 따로 불러온다
@@ -408,21 +458,163 @@ export class Deck {
     void this.collect();
   }
 
+  /** 넘기기: 이 카드를 데려온 인물 비중 −SKIP */
+  skip(): DeckCard | undefined {
+    const card = this.queue[0];
+    if (card) {
+      const p = this.people.get(card.via[0]?.personId ?? "");
+      if (p) p.weight = Math.max(WEIGHT.MIN, p.weight - WEIGHT.SKIP);
+    }
+    return this.advance();
+  }
+
+  /**
+   * 담기: 저장(노트는 화면 쪽) + 방향. 이 곡의 크레딧 인물을 뒤에서 읽어 비중을 더한다.
+   * 경로에는 데려온 인물 → 이 곡을 잇는다.
+   */
+  keep(): DeckCard | undefined {
+    const card = this.queue[0];
+    if (!card) return undefined;
+    const lead = card.via[0];
+    if (lead && this.path[this.path.length - 1]?.id !== lead.personId)
+      this.path.push({ kind: "person", id: lead.personId, label: lead.name });
+    this.path.push({ kind: "song", id: card.id, label: card.title });
+    // 데려온 인물은 바로 비중을 더한다 (크레딧을 읽기 전에도 방향이 바뀌도록)
+    for (const v of card.via) {
+      const p = this.people.get(v.personId);
+      if (p) p.weight += WEIGHT.KEEP;
+    }
+    const out = this.advance();
+    // 지금 보이는 다음 카드는 두고, 그 뒤 대기열은 새 비중으로 다시 고른다
+    this.requeue();
+    this.emit();
+    void this.absorbCredits(card);
+    return out;
+  }
+
+  /** 담은 곡의 크레딧 인물을 비중에 더하거나 새로 합류시킨다 (뒤에서) */
+  private async absorbCredits(card: DeckCard) {
+    const ctl = this.ctl;
+    if (!ctl) return;
+    try {
+      const d = await getRecording(card.id);
+      if (ctl.signal.aborted) return;
+      const already = new Set(card.via.map((v) => v.personId));
+      const added: string[] = [];
+      for (const c of corePeople(d.credits)) {
+        if (already.has(c.personId)) continue; // 데려온 인물은 이미 더함
+        const p = this.people.get(c.personId);
+        if (p) p.weight += WEIGHT.KEEP;
+        else {
+          this.people.set(c.personId, {
+            personId: c.personId,
+            name: c.name,
+            role: c.role,
+            weight: WEIGHT.KEEP,
+            fromTitle: card.title,
+            exhausted: false,
+          });
+          added.push(c.name);
+        }
+      }
+      if (added.length) {
+        this.joined = { names: added, n: (this.joined?.n ?? 0) + 1 };
+        this.exhausted = false;
+      }
+      this.requeue();
+      this.emit();
+      void this.collect();
+    } catch {
+      /* 크레딧을 못 읽으면 비중만 그대로 */
+    }
+  }
+
+  /** 카드의 인물 이름을 누르면 그 사람에게 집중. 같은 사람을 다시 누르거나 null이면 해제 */
+  focus(personId: string | null) {
+    this.focusId = personId && this.focusId !== personId ? personId : null;
+    const p = personId ? this.people.get(personId) : undefined;
+    if (p) p.exhausted = p.exhausted && !!p.queue && p.queue.length === 0;
+    // 대기열 뒤쪽(지금 카드 제외)을 새 비중으로 다시 고른다
+    this.requeue();
+    this.emit();
+    void this.collect();
+  }
+
+  /** 소리 방향 바꾸기: 대기열 정렬 기준만 바꾼다 */
+  setMode(mode: SoundMode) {
+    if (this.mode === mode) return;
+    this.mode = mode;
+    this.requeue();
+    this.emit();
+  }
+
+  /** 지금 보이는 카드는 두고, 나머지 대기열 카드를 후보로 돌려 새 기준으로 다시 고른다 */
+  private requeue() {
+    if (this.queue.length <= 1) return;
+    const rest = this.queue.splice(1);
+    this.pool.unshift(...rest);
+    this.served = Math.max(0, this.served - rest.length);
+    this.recentArtists = this.queue.map((c) => c.primaryArtist).slice(-(DECK.ARTIST_WINDOW - 1));
+    this.fillQueue();
+    this.prefetch();
+  }
+
+  /** 맨 앞 카드 처리. 이미 본 곡으로 기록하고 다음 카드로 */
+  private advance(): DeckCard | undefined {
+    const card = this.queue.shift();
+    if (card) this.markSeen(card.id);
+    this.fillQueue();
+    this.prefetch();
+    this.emit();
+    void this.collect();
+    return card;
+  }
+
+  retry() {
+    this.error = null;
+    if (!this.origin_) return;
+    void this.collect();
+  }
+
+  private markSeen(id: string) {
+    if (this.seen.has(id)) return;
+    this.seen.add(id);
+    this.seenList.push(id);
+    saveSeen(this.seenList);
+  }
+
   /**
    * 더 모아야 하는지: 같은 가수 규칙 때문에 지금 못 쓰는 후보는 세지 않는다
    * (한 가수 곡만 쌓여 대기열이 멈추는 것 방지). 후보는 POOL_MAX까지만 쌓는다.
    */
+  /** 후보가 아직 없는 (살아 있는) 인물들의 비중 몫 */
+  private pendingShare(): number {
+    const live = [...this.people.values()].filter((p) => !p.exhausted);
+    const total = live.reduce((t, p) => t + this.effWeight(p), 0);
+    if (total <= 0) return 0;
+    const has = new Set(this.pool.filter((c) => this.artistOk(c)).map((c) => c.via[0].personId));
+    const pending = live.filter((p) => !has.has(p.personId)).reduce((t, p) => t + this.effWeight(p), 0);
+    return pending / total;
+  }
+
   private needMore(): boolean {
+    if (this.pool.length >= DECK.POOL_HARD_MAX) return false;
+    if (this.pendingShare() >= DECK.WAIT_SHARE) return true;
     if (this.pool.length >= DECK.POOL_MAX) return false;
     const usable = this.pool.filter((c) => this.artistOk(c)).length;
+    // 집중 중이면 그 사람 후보가 충분해야 한다
+    if (this.focusId) {
+      const mine = this.pool.filter((c) => c.via.some((v) => v.personId === this.focusId)).length;
+      const p = this.people.get(this.focusId);
+      if (mine < DECK.QUEUE_MIN && p && !p.exhausted) return true;
+    }
     return this.queue.length + usable < DECK.QUEUE_MIN + DECK.POOL_EXTRA;
   }
 
-  /** 대기열이 부족하면 한 번에 인물별 ROUND_PER_PERSON곡씩 모은다 */
   private async collect() {
     if (this.running) return;
     const ctl = this.ctl;
-    if (!ctl) return;
+    if (!ctl || !this.origin_) return;
     this.running = true;
     const opts = { low: true as const, signal: ctl.signal };
     try {
@@ -445,56 +637,68 @@ export class Deck {
       }
     } finally {
       this.running = false;
-      // 출발점이 바뀌는 사이 끝난 경우 새 출발점으로 다시
       if (this.ctl !== ctl && this.ctl && !this.ctl.signal.aborted) void this.collect();
     }
   }
 
+  /** 비중 비례로 인물 ROUND_PEOPLE명을 뽑아 후보를 조금씩 모은다 */
   private async round(opts: { low: true; signal: AbortSignal }) {
-    const origin = this.origin;
+    const origin = this.origin_;
     if (!origin) return;
-    const live = this.people.filter((p) => !p.exhausted);
+    const live = [...this.people.values()].filter((p) => !p.exhausted);
     if (!live.length) {
       this.exhausted = true;
       return;
     }
-    // 첫 카드를 빨리 보이도록, 한 회차에 크레딧은 CREDITS_PER_ROUND명까지만 새로 읽는다
-    const toRead = live.filter((p) => !p.queue).slice(0, DECK.CREDITS_PER_ROUND);
-    // 진행 문구: 이번 회차 단계 수 = 크레딧 읽기 + 작품 대표 찾기 + 묶음 조회 1
+    // 비중 비례 비복원 추출. 새로 읽는 크레딧은 회차당 CREDITS_PER_ROUND명까지 (첫 카드를 빨리)
+    const chosen: PersonState[] = [];
+    const cand = [...live];
+    let reads = 0;
+    const maxReads =
+      this.origin_ && this.pendingShare() >= DECK.WAIT_SHARE && this.served > 0
+        ? DECK.CREDITS_PER_ROUND_RUSH
+        : DECK.CREDITS_PER_ROUND;
+    while (chosen.length < DECK.ROUND_PEOPLE && cand.length) {
+      const p = weightedPick(cand, (x) => this.effWeight(x))!;
+      cand.splice(cand.indexOf(p), 1);
+      if (!p.queue) {
+        if (reads >= maxReads) continue;
+        reads++;
+      }
+      chosen.push(p);
+    }
+
+    const toRead = chosen.filter((p) => !p.queue);
     this.progress = { phase: "collect", done: 0, total: toRead.length + 1 };
     this.emit();
     const step = (extraTotal = 0) => {
-      this.progress = {
-        phase: "collect",
-        done: this.progress.done + 1,
-        total: this.progress.total + extraTotal,
-      };
+      this.progress = { phase: "collect", done: this.progress.done + 1, total: this.progress.total + extraTotal };
       this.emit();
     };
 
-    // 1) 인물별 후보 대기열 (크레딧 읽기)
+    // 1) 크레딧 읽기
     for (const p of toRead) {
       try {
         const items = (await getArtistCredits(p.personId, opts)).items;
         const fresh = items.filter((it) => !this.titles.has(normalizeTitle(it.title)));
         const same = fresh.filter((it) => it.roles.includes(p.role));
-        const rest = fresh.filter((it) => !it.roles.includes(p.role));
+        // 나머지는 핵심 역할(작곡·작사·편곡·프로듀서)로 참여한 곡만 (리믹서·보컬 디렉터 등 제외)
+        const rest = fresh.filter((it) => !it.roles.includes(p.role) && it.roles.some(isCoreRole));
         p.queue = [...spread(same, DECK.PERSON_QUEUE_SAME_ROLE), ...spread(rest, DECK.PERSON_QUEUE_OTHER)];
-      } catch (e) {
+      } catch {
         if (opts.signal.aborted) throw new AbortedError();
         p.exhausted = true; // 이 인물은 건너뜀
       }
       step();
     }
 
-    // 2) 인물을 돌아가며 ROUND_PER_PERSON곡씩 꺼낸다
+    // 2) 뽑힌 인물마다 ROUND_PER_PERSON곡씩 꺼낸다
     const picked: Array<{ p: PersonState; it: PersonItem }> = [];
-    const order = this.people.filter((p) => !p.exhausted && p.queue);
-    for (let k = 0; k < order.length; k++) {
-      const p = order[(this.personPtr + k) % order.length];
+    for (const p of chosen) {
+      if (!p.queue || p.exhausted) continue;
       let n = 0;
-      while (n < DECK.ROUND_PER_PERSON && p.queue!.length) {
-        const it = p.queue!.shift()!;
+      while (n < DECK.ROUND_PER_PERSON && p.queue.length) {
+        const it = p.queue.shift()!;
         const key = normalizeTitle(it.title);
         if (this.titles.has(key)) {
           this.addVia(key, p, it);
@@ -506,11 +710,10 @@ export class Deck {
         picked.push({ p, it });
         n++;
       }
-      if (!p.queue!.length) p.exhausted = true;
+      if (!p.queue.length) p.exhausted = true;
     }
-    this.personPtr++;
     if (!picked.length) {
-      if (this.people.every((p) => p.exhausted)) this.exhausted = true;
+      if ([...this.people.values()].every((p) => p.exhausted)) this.exhausted = true;
       return;
     }
 
@@ -518,9 +721,7 @@ export class Deck {
     const works = picked.filter((x) => x.it.kind === "work");
     if (works.length) step(works.length);
     const recIds = new Map<{ p: PersonState; it: PersonItem }, string>();
-    for (const x of picked) {
-      if (x.it.kind === "recording") recIds.set(x, x.it.id);
-    }
+    for (const x of picked) if (x.it.kind === "recording") recIds.set(x, x.it.id);
     for (const x of works) {
       try {
         const rep = await resolveWorkToRecording(x.it.id, opts);
@@ -560,10 +761,8 @@ export class Deck {
         artist: r.artist,
         primaryArtist: r.artistIds[0] ?? r.artist,
         isrc: r.isrcs[0],
-        releaseGroupId: (r as BatchRecording).releaseGroupId,
+        releaseGroupId: r.releaseGroupId,
         via: [this.via(x.p, x.it)],
-        originId: origin.id,
-        originTitle: origin.title,
         features: r.isrcs[0] ? undefined : null,
       };
       this.pool.push(card);
@@ -577,6 +776,7 @@ export class Deck {
       name: p.name,
       originRole: p.role,
       role: it.roles.includes(p.role) ? p.role : it.roles[0] ?? p.role,
+      fromTitle: p.fromTitle,
     };
   }
 
@@ -610,56 +810,71 @@ export class Deck {
     c.contrast = contrast;
     this.queue.push(c);
     this.served++;
-    this.lastPerson = c.via[0]?.personId;
     this.recentArtists = [...this.recentArtists, c.primaryArtist].slice(-(DECK.ARTIST_WINDOW - 1));
   }
 
+  /** 소리 방향 기준으로 후보 정렬 (소리 데이터 없는 곡은 뒤로) */
+  private byMode(list: DeckCard[]): DeckCard[] {
+    const base = this.origin_?.features;
+    return [...list].sort((a, b) => {
+      const sa = modeScore(this.mode, base, a.features);
+      const sb = modeScore(this.mode, base, b.features);
+      if (sa == null && sb == null) return 0;
+      if (sa == null) return 1;
+      if (sb == null) return -1;
+      return sb - sa;
+    });
+  }
+
   /**
-   * 후보 → 화면 대기열. 다양성 규칙을 지키며 QUEUE_MIN장까지 채운다.
+   * 후보 → 화면 대기열. QUEUE_MIN장까지 채운다.
+   * - CONTRAST_EVERY장마다 '같은 사람, 다른 분위기' (같은 인물 후보 중 소리 차이가 가장 큰 곡)
+   * - 그 밖에는 비중 비례로 인물을 뽑고, 그 인물 후보 중 소리 방향 기준 1위
    * relax: 더 모을 후보가 없을 때는 같은 가수 규칙을 풀어 남은 후보를 보여 준다.
    */
   private fillQueue(relax = false) {
-    const base = this.origin?.features;
+    const base = this.origin_?.features;
     while (this.queue.length < DECK.QUEUE_MIN && this.pool.length) {
       const position = this.served + 1;
       if (position % DECK.CONTRAST_EVERY === 0) this.contrastDebt = Math.max(this.contrastDebt, 1);
-      // N장마다 '같은 사람, 다른 분위기': 같은 인물 후보 중 소리 차이가 가장 큰 곡.
-      // 소리 데이터가 아직이면 미뤄 두었다가 다음 자리에서 채운다
-      if (base && this.contrastDebt > 0) {
+      if (base && this.contrastDebt > 0 && !this.focusId) {
         const lastVia = this.queue[this.queue.length - 1]?.via[0]?.personId;
         const scored = this.pool
           .filter((c) => c.features && this.artistOk(c) && simLevel(base, c.features) !== "매우 비슷")
-          .map((c) => ({ c, d: 1 - similarity(base, c.features!) }))
+          // 소리 차이 × 데려온 인물 비중: 비중이 낮아진(넘긴) 인물의 곡은 덜 나온다
+          .map((c) => {
+            const p = this.people.get(c.via[0]?.personId ?? "");
+            return { c, d: (1 - similarity(base, c.features!)) * (p ? this.effWeight(p) : WEIGHT.MIN) };
+          })
           .sort(
             (a, b) =>
-              Number(b.c.via[0]?.personId === lastVia) - Number(a.c.via[0]?.personId === lastVia) ||
-              b.d - a.d,
+              Number(b.c.via[0]?.personId === lastVia) - Number(a.c.via[0]?.personId === lastVia) || b.d - a.d,
           );
         if (scored[0]) {
           this.take(scored[0].c, true);
           this.contrastDebt = 0;
           continue;
         }
-        // 소리 데이터를 기다리는 후보가 있고 보여 줄 카드가 남아 있으면 잠시 기다린다
         if (!relax && this.queue.length > 0 && this.pool.some((c) => c.features === undefined)) break;
       }
-      // 인물별 번갈아
-      const ids = [...new Set(this.pool.map((c) => c.via[0].personId))];
+
+      // 비중이 큰 인물의 후보가 아직 없으면, 보여 줄 카드가 남아 있는 동안 기다린다
+      if (!relax && !this.exhausted && this.queue.length >= 1 && this.pendingShare() >= DECK.WAIT_SHARE) break;
+      const usable = this.pool.filter((c) => this.artistOk(c));
       let chosen: DeckCard | undefined;
-      for (let k = 0; k < this.people.length && !chosen; k++) {
-        const person = this.people[(this.pickPtr + k) % Math.max(1, this.people.length)];
-        if (!person || !ids.includes(person.personId)) continue;
-        chosen = this.pool.find((c) => c.via[0].personId === person.personId && this.artistOk(c));
-        if (chosen) this.pickPtr = (this.pickPtr + k + 1) % this.people.length;
+      if (usable.length) {
+        // 후보가 있는 인물 중 비중 비례로 한 명
+        const ids = [...new Set(usable.map((c) => c.via[0].personId))];
+        const pid = weightedPick(ids, (id) => {
+          const p = this.people.get(id);
+          return p ? this.effWeight(p) : WEIGHT.MIN;
+        });
+        chosen = this.byMode(usable.filter((c) => c.via[0].personId === pid))[0];
       }
-      if (!chosen) chosen = this.pool.find((c) => this.artistOk(c));
       // 보여 줄 카드가 하나도 없거나 후보가 가득 찼으면 같은 가수 규칙을 푼다 (멈춤 방지)
       if (!chosen && (relax || this.exhausted || this.queue.length === 0 || this.pool.length >= DECK.POOL_MAX))
-        chosen = this.pool[0];
-      if (!chosen) break; // 같은 가수 규칙 때문에 기다린다
-      // 아직 크레딧을 안 읽은 인물이 남아 있으면 같은 인물 연속 카드는 기다린다 (첫 카드는 바로)
-      const othersPending = this.people.some((p) => !p.queue && !p.exhausted);
-      if (!relax && this.served > 0 && othersPending && chosen.via[0].personId === this.lastPerson) break;
+        chosen = this.byMode(this.pool)[0];
+      if (!chosen) break;
       this.take(chosen);
     }
   }
