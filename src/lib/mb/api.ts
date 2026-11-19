@@ -1,3 +1,4 @@
+import type { RunOptions } from "../cache";
 import { mbGet } from "./client";
 import type {
   MbArtistCredit,
@@ -115,18 +116,36 @@ function tokens(q: string): string[] {
     .filter(Boolean);
 }
 
-/** 상위 결과 중 질의 단어를 모두 (제목+가수에) 포함하는 결과가 있으면 '맞는 결과'로 본다 */
-function looksRelevant(q: string, hits: SearchHit[]): boolean {
-  const ts = tokens(q);
-  return hits.slice(0, 5).some((h) => {
-    const hay = normalizeLoose(`${h.title} ${h.artist}`);
-    return ts.every((t) => hay.includes(t));
-  });
+/** 제목·가수를 단어 단위로 나눈다 (밑줄·문장부호 포함 분리) */
+function words(s: string): string[] {
+  return s
+    .toLowerCase()
+    .split(/[sp{P}p{S}_]+/u)
+    .filter(Boolean);
 }
 
-function rank(hits: SearchHit[]): SearchHit[] {
+/**
+ * 질의 단어 중 제목·가수의 '단어'와 일치하는 수.
+ * 부분 문자열이 아니라 단어 단위로 본다 (예: "AESPAsupernova_phixelremix"는 Supernova·aespa에 맞지 않음).
+ * 여러 단어로 된 제목은 질의 안에 이어 붙은 형태도 허용한다.
+ */
+function matchCount(q: string, h: SearchHit): number {
+  const ws = new Set([...words(h.title), ...words(h.artist)]);
+  const joinedTitle = normalizeLoose(h.title);
+  const joinedArtist = normalizeLoose(h.artist);
+  return tokens(q).filter((t) => ws.has(t) || t === joinedTitle || t === joinedArtist).length;
+}
+
+/** 상위 결과 중 질의 단어를 모두 (제목+가수에서 단어 단위로) 포함하는 결과가 있으면 '맞는 결과'로 본다 */
+function looksRelevant(q: string, hits: SearchHit[]): boolean {
+  const n = tokens(q).length;
+  return hits.slice(0, 5).some((h) => matchCount(q, h) === n);
+}
+
+function rank(hits: SearchHit[], q: string): SearchHit[] {
   return [...hits].sort(
     (a, b) =>
+      matchCount(q, b) - matchCount(q, a) ||
       b.score - a.score ||
       Number(b.hasIsrc) - Number(a.hasIsrc) ||
       Number(!b.disambiguation) - Number(!a.disambiguation),
@@ -166,7 +185,7 @@ export async function searchRecordings(q: string): Promise<SearchHit[]> {
   let first: SearchHit[] = [];
   if (!explicit) {
     first = await runQuery(esc(query));
-    if (first.length && looksRelevant(query, first)) return rank(first);
+    if (first.length && looksRelevant(query, first)) return rank(first, query);
   }
 
   for (const [title, artist] of sep) {
@@ -177,9 +196,9 @@ export async function searchRecordings(q: string): Promise<SearchHit[]> {
       hits = [];
     }
     if (!hits.length) hits = await runQuery(`${quote(title)} ${esc(artist)}`);
-    if (hits.length && looksRelevant(`${title} ${artist}`, hits)) return rank(hits);
+    if (hits.length && looksRelevant(`${title} ${artist}`, hits)) return rank(hits, `${title} ${artist}`);
   }
-  return rank(first);
+  return rank(first, query);
 }
 
 /* ───────────────────────── 곡 상세 ───────────────────────── */
@@ -301,8 +320,8 @@ export interface PersonDetail {
 /** 녹음 버전 표기 중 대표곡에서 제외할 것 */
 const NON_ORIGINAL = /(inst|instrumental|mr|remix|live|karaoke|acoustic|ver\.|version|edit|mix|demo|sped|slowed|반주|라이브)/i;
 
-export async function getArtistCredits(mbid: string): Promise<PersonDetail> {
-  const a = await mbGet<MbArtistLookup>(`artist/${mbid}`, { inc: "work-rels+recording-rels" });
+export async function getArtistCredits(mbid: string, opts?: RunOptions): Promise<PersonDetail> {
+  const a = await mbGet<MbArtistLookup>(`artist/${mbid}`, { inc: "work-rels+recording-rels" }, opts);
   const byTitle = new Map<string, PersonItem>();
 
   const add = (kind: PersonItem["kind"], id: string, title: string, dis: string, rel: MbRelation) => {
@@ -381,13 +400,19 @@ export interface WorkRecording {
  * /work/<mbid>?inc=recording-rels 응답에는 가수·ISRC가 없어서,
  * 같은 연결을 가수·ISRC와 함께 돌려주는 browse 요청(recording?work=)을 사용한다.
  */
-export async function getWorkRecordings(workId: string): Promise<WorkRecording[]> {
-  const res = await mbGet<MbRecordingBrowse>("recording", {
-    work: workId,
-    inc: "artist-credits+isrcs",
-    limit: "100",
-  });
-  return (res.recordings ?? []).map((r) => ({
+export async function getWorkRecordings(workId: string, opts?: RunOptions): Promise<WorkRecording[]> {
+  const res = await mbGet<MbRecordingBrowse>(
+    "recording",
+    { work: workId, inc: "artist-credits+isrcs", limit: "100" },
+    opts,
+  );
+  return (res.recordings ?? []).map(toWorkRecording);
+}
+
+type BrowseRec = MbRecordingBrowse["recordings"][number];
+
+function toWorkRecording(r: BrowseRec): WorkRecording {
+  return {
     id: r.id,
     title: r.title,
     artist: creditText(r["artist-credit"]),
@@ -397,7 +422,13 @@ export async function getWorkRecordings(workId: string): Promise<WorkRecording[]
     firstReleaseDate: r["first-release-date"] ?? "",
     isrcs: r.isrcs ?? [],
     video: r.video,
-  }));
+  };
+}
+
+/** 가벼운 녹음 조회 (추천 후보용): 가수·ISRC만 */
+export async function getRecordingLite(mbid: string, opts?: RunOptions): Promise<WorkRecording> {
+  const r = await mbGet<BrowseRec>(`recording/${mbid}`, { inc: "artist-credits+isrcs" }, opts);
+  return toWorkRecording(r);
 }
 
 function originalness(r: WorkRecording): number {
@@ -418,8 +449,11 @@ export function pickRepresentative(recs: WorkRecording[]): WorkRecording | undef
   )[0];
 }
 
-export async function resolveWorkToRecording(workId: string): Promise<WorkRecording | undefined> {
-  return pickRepresentative(await getWorkRecordings(workId));
+export async function resolveWorkToRecording(
+  workId: string,
+  opts?: RunOptions,
+): Promise<WorkRecording | undefined> {
+  return pickRepresentative(await getWorkRecordings(workId, opts));
 }
 
 /**

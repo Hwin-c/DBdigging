@@ -2,10 +2,13 @@
 import { useRouter, useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useState } from "react";
 import { useAsync } from "@/hooks/useAsync";
+import { getFeatures } from "@/lib/audio";
 import { findIsrcFallback, getRecording, searchRecordings } from "@/lib/mb/api";
 import { player } from "@/lib/preview";
+import { AudioChips } from "./AudioChips";
 import { DigPath, type PathStep } from "./DigPath";
 import { PersonPanel } from "./PersonPanel";
+import { Recommendations } from "./Recommendations";
 import { SearchBar } from "./SearchBar";
 import { SearchResults } from "./SearchResults";
 import { SongCard, SongCardSkeleton } from "./SongCard";
@@ -65,6 +68,11 @@ export function DigApp() {
 
   const isrc = d?.isrcs[0] ?? fallback.data?.isrc;
   const isrcNote = !d?.isrcs[0] && fallback.data ? "같은 곡의 다른 녹음" : undefined;
+
+  // 소리 특성: 실패하면 칩만 숨기고 크레딧 기능은 유지
+  const features = useAsync(isrc ? () => getFeatures(isrc) : null, [isrc]);
+  const featLoading = features.loading || (!!d && d.isrcs.length === 0 && fallback.loading);
+  const base = features.error ? null : features.data;
 
   // 곡이 바뀌면 재생 중인 미리듣기 정지
   useEffect(() => {
@@ -177,6 +185,7 @@ export function DigApp() {
             isrcNote={isrcNote}
             activePerson={person}
             onPerson={onPerson}
+            audioSlot={<AudioChips features={base} loading={featLoading} />}
           />
         )}
 
@@ -188,6 +197,15 @@ export function DigApp() {
             onLoaded={(p) => setPersonNames((m) => (m[p.artist.id] ? m : { ...m, [p.artist.id]: p.artist.name }))}
             onPickRecording={(id) => go({ rec: id })}
             onClose={() => go({ rec }, false)}
+          />
+        )}
+
+        {d && (
+          <Recommendations
+            detail={d}
+            base={base}
+            baseSettled={!featLoading}
+            onOpen={(id) => go({ rec: id })}
           />
         )}
       </div>
