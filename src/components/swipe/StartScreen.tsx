@@ -79,7 +79,8 @@ function FloatingCovers({
           >
             <Cover
               // 시작 화면은 빠른 Deezer 커버(ISRC)를 먼저, 없으면 Cover Art Archive
-              releaseGroupId={s.isrc ? undefined : s.releaseGroupId}
+              releaseGroupId={s.releaseGroupId}
+              preferDeezer
               isrc={s.isrc}
               title={s.title}
               artist={s.artist}
@@ -166,7 +167,9 @@ export function StartScreen({
                 className="flex min-h-[44px] items-center gap-2 rounded-full border border-[#E5E5E5] bg-white py-1.5 pl-1.5 pr-4 text-[14px] text-black hover:border-black"
               >
                 <Cover
-                  releaseGroupId={e.isrc ? undefined : e.releaseGroupId}
+                  releaseGroupId={e.releaseGroupId}
+                  preferDeezer
+                  quiet
                   isrc={e.isrc}
                   title={e.title}
                   artist={e.artist}

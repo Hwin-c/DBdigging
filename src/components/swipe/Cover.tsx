@@ -1,7 +1,7 @@
 "use client";
 import clsx from "clsx";
 import { twMerge } from "tailwind-merge";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { findCover } from "@/lib/preview";
 
 /** Deezer(ISRC) 앨범 이미지 주소 메모리 캐시. 미리듣기 주소는 담지 않는다 */
@@ -16,8 +16,13 @@ function deezerCover(isrc: string): Promise<string | null> {
   return p;
 }
 
+const LOOKUP = "deezer:lookup";
+
 /**
- * 앨범 커버. Cover Art Archive(release-group) → 실패하면 Deezer(ISRC) → 둘 다 없으면 제목 글자 판.
+ * 앨범 커버. 후보를 차례로 시도한다.
+ * - 기본: 이미 아는 주소(미리듣기의 Deezer 커버) → Cover Art Archive → Deezer(ISRC) 조회
+ * - preferDeezer: 이미 아는 주소 → Deezer(ISRC) 조회 → Cover Art Archive (시작 화면처럼 빨리 보여야 할 때)
+ * 모두 실패하면 제목 글자 판(quiet면 비워 둠).
  */
 export function Cover({
   releaseGroupId,
@@ -28,6 +33,7 @@ export function Cover({
   size = 250,
   className,
   quiet = false,
+  preferDeezer = false,
 }: {
   releaseGroupId?: string;
   isrc?: string;
@@ -37,42 +43,54 @@ export function Cover({
   artist: string;
   size?: 250 | 500;
   className?: string;
-  /** 불러오기 전·실패 시 아무것도 보이지 않게 (시작 화면에 떠 있는 커버용) */
+  /** 불러오기 전·실패 시 아무것도 보이지 않게 (작은 커버·떠 있는 커버용) */
   quiet?: boolean;
+  preferDeezer?: boolean;
 }) {
+  void artist;
   const caa = releaseGroupId ? `https://coverartarchive.org/release-group/${releaseGroupId}/front-${size}` : null;
-  // Deezer CDN이 Cover Art Archive(archive.org 경유)보다 빨라서, 알고 있으면 먼저 쓴다
-  const [src, setSrc] = useState<string | null>(fallback ?? caa ?? null);
-  const [failed, setFailed] = useState(false);
+  const order = useMemo(() => {
+    const lookup = isrc ? LOOKUP : null;
+    const list = preferDeezer ? [fallback, lookup, caa] : [fallback, caa, lookup];
+    return list.filter((x): x is string => !!x);
+  }, [fallback, caa, isrc, preferDeezer]);
+
+  const [idx, setIdx] = useState(0);
+  const [src, setSrc] = useState<string | null>(null);
   const [loaded, setLoaded] = useState(false);
 
+  // 후보 목록이 바뀌면 처음부터 (이미 보이는 커버는 유지해 깜빡임 방지)
   useEffect(() => {
-    setFailed(false);
-    // 이미 보이는 커버는 바꾸지 않는다 (깜빡임 방지)
-    setLoaded((wasLoaded) => {
-      if (!wasLoaded) setSrc(fallback ?? caa ?? null);
-      return wasLoaded;
-    });
-  }, [caa, fallback]);
+    if (!loaded) setIdx(0);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [order]);
 
   useEffect(() => {
     let live = true;
-    if (!src && isrc && !failed) {
-      void deezerCover(isrc).then((u) => {
-        if (!live) return;
-        if (u) setSrc(u);
-        else setFailed(true);
-      });
+    const cur = order[idx];
+    if (!cur) {
+      setSrc(null);
+      return;
     }
+    if (cur !== LOOKUP) {
+      setSrc(cur);
+      return;
+    }
+    setSrc(null);
+    void deezerCover(isrc!).then((u) => {
+      if (!live) return;
+      if (u) setSrc(u);
+      else setIdx((i) => i + 1);
+    });
     return () => {
       live = false;
     };
-  }, [src, isrc, failed]);
+  }, [order, idx, isrc]);
 
+  const failed = idx >= order.length;
   const onError = () => {
-    if (src && src === fallback && caa) setSrc(caa);
-    else if (src && isrc && !src.includes("dzcdn")) setSrc(null);
-    else setFailed(true);
+    setLoaded(false);
+    setIdx((i) => i + 1);
   };
 
   return (
