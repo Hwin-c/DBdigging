@@ -253,7 +253,7 @@ export function SwipeApp() {
             </div>
           )}
 
-          <div className="relative mt-5 min-h-[480px]">
+          <div className="relative mt-5 min-h-[380px] md:min-h-[480px]">
             {leaving && (
               <div
                 key={leaving.n}
@@ -278,7 +278,7 @@ export function SwipeApp() {
               <div
                 key={toast.n}
                 role="status"
-                className="toast-in pointer-events-none absolute inset-x-0 top-2 z-20 mx-auto w-max max-w-[90%] rounded-full bg-black px-4 py-2 text-center text-[14px] font-semibold text-white"
+                className="toast-in pointer-events-none absolute inset-x-0 top-2 z-20 mx-auto w-max max-w-[92%] truncate whitespace-nowrap rounded-full bg-black px-4 py-2 text-center text-[13px] font-semibold text-white md:text-[14px]"
               >
                 {toast.text}
               </div>
