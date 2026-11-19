@@ -104,20 +104,37 @@ export function SwipeApp() {
   const card = snap.queue[0];
   const origin = snap.origin;
 
+  /**
+   * 이 카드를 재생한다. 어느 경우든 이전 곡은 여기서 동기적으로 멈춘다.
+   * - 미리듣기 주소가 있으면 바로 재생 (제스처 안에서 호출되면 휴대폰 자동재생 제한을 피함)
+   * - 아직 없으면 받는 동안 "불러오는 중", 받은 뒤 재생 시도, 막히면 "탭해서 재생"
+   * - 미리듣기가 없는 곡이면 멈춘 채로 "미리듣기 없음"
+   */
   const playCard = useCallback((c: DeckCard | undefined) => {
     if (!c) return;
     if (c.preview) player.playNow(c.id, c.preview);
-    else if (c.preview === undefined)
-      void player.play(c.id, () => deckRef.current?.ensurePreview(c.id) ?? Promise.resolve(null));
+    else if (c.preview === null) player.markNone(c.id);
+    else void player.play(c.id, () => deckRef.current?.ensurePreview(c) ?? Promise.resolve(null));
   }, []);
 
   /** 탭·Space: 재생/정지 (이벤트 처리 안에서 바로 play) */
   const toggle = useCallback(() => {
     if (!card) return;
     soundOn.current = true;
-    if (player.state.key === card.id && player.state.status !== "idle") player.toggle(card.id);
-    else playCard(card);
+    const ps = player.state;
+    if (ps.key === card.id && ps.status === "loading") return; // 받는 중에는 기다린다
+    if (ps.key === card.id && (ps.status === "playing" || ps.status === "paused")) player.toggle(card.id);
+    else playCard(card); // idle·blocked(탭해서 재생)·다른 카드
   }, [card, playCard]);
+
+  // 대기열이 비어 있다가 다음 카드가 늦게 도착한 경우: 소리를 켜 둔 상태면 이어서 재생을 시도한다.
+  // 사용자 동작 밖이라 휴대폰이 막을 수 있고, 그러면 "탭해서 재생"으로 남는다
+  const frontId = card?.id;
+  useEffect(() => {
+    if (!soundOn.current || !card || player.state.key === card.id) return;
+    playCard(card);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [frontId]);
 
   /** 왼쪽 넘기기 · 오른쪽 담기(저장 + 방향) */
   const act = useCallback(
@@ -125,6 +142,8 @@ export function SwipeApp() {
       const d = deckRef.current;
       const c = d?.snapshot().queue[0];
       if (!d || !c) return;
+      // 이전 곡을 미리듣기 유무와 관계없이 즉시(동기적으로) 멈춘다
+      player.stop();
       setLeaving((l) => ({ card: c, dir, n: (l?.n ?? 0) + 1 }));
       if (dir === "right") {
         setNote((prev) => {
@@ -149,7 +168,6 @@ export function SwipeApp() {
       // 다음 카드를 같은 이벤트 처리 안에서 재생 (모바일 자동재생 제한)
       const next = d.snapshot().queue[0];
       if (soundOn.current && next) playCard(next);
-      else player.stop();
     },
     [playCard],
   );

@@ -1,6 +1,6 @@
 "use client";
 import clsx from "clsx";
-import { ExternalLink, Pause, Play } from "lucide-react";
+import { ExternalLink, Loader2, Pause, Play } from "lucide-react";
 import type { AudioFeatures } from "@/lib/audio";
 import { reasonText, simLevel, soundDiff, type DeckCard, type Via } from "@/lib/deck";
 import { Cover } from "./Cover";
@@ -114,7 +114,7 @@ export function SwipeCard({
   card: DeckCard;
   /** 시작 곡 소리 특성 */
   base: AudioFeatures | null | undefined;
-  status: "idle" | "loading" | "playing" | "paused";
+  status: "idle" | "loading" | "playing" | "paused" | "blocked";
   onSwipe: (dir: SwipeDir) => void;
   onTap: () => void;
   focusId: string | null;
@@ -123,6 +123,8 @@ export function SwipeCard({
 }) {
   const { drag, handlers } = useSwipe({ onSwipe, onTap });
   const playing = status === "playing";
+  const loadingPreview = status === "loading";
+  const blocked = status === "blocked";
   const level = base && card.features ? simLevel(base, card.features) : null;
   const diffs = base && card.features ? soundDiff(base, card.features) : [];
   const noPreview = card.preview === null;
@@ -153,11 +155,18 @@ export function SwipeCard({
           <button
             type="button"
             onClick={onTap}
-            aria-label={playing ? "정지" : "30초 미리듣기"}
+            aria-label={playing ? "정지" : loadingPreview ? "불러오는 중" : blocked ? "탭해서 재생" : "30초 미리듣기"}
+            aria-busy={loadingPreview}
             className="mt-0.5 flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-black text-white disabled:bg-[#D4D4D4]"
             disabled={noPreview}
           >
-            {playing ? <Pause className="h-[18px] w-[18px]" /> : <Play className="ml-0.5 h-[18px] w-[18px]" />}
+            {playing ? (
+              <Pause className="h-[18px] w-[18px]" />
+            ) : loadingPreview ? (
+              <Loader2 className="h-[18px] w-[18px] animate-spin motion-reduce:animate-none" />
+            ) : (
+              <Play className="ml-0.5 h-[18px] w-[18px]" />
+            )}
           </button>
         </div>
 
@@ -177,6 +186,12 @@ export function SwipeCard({
             {!card.contrast && <span className="font-semibold text-black">{level}</span>}
             {!card.contrast && diffs.length > 0 && <span>, </span>}
             {diffs.length > 0 ? `시작 곡보다 ${diffs.join(", ")} 곡` : card.contrast ? "" : " 분위기"}
+          </p>
+        )}
+
+        {(loadingPreview || blocked) && (
+          <p role="status" className={blocked ? "mt-3 text-[13px] font-semibold text-black" : "mt-3 text-[13px] text-[#6E6E73]"}>
+            {blocked ? "탭해서 재생" : "미리듣기 불러오는 중"}
           </p>
         )}
 

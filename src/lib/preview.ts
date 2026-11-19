@@ -160,10 +160,18 @@ export async function findCover(isrc: string): Promise<string | null> {
 
 /* ───────────── 공유 오디오 요소: 한 번에 한 곡만 재생 ───────────── */
 
-export type PlayerState = { key: string | null; status: "idle" | "loading" | "playing" | "paused" };
+/** blocked: 브라우저(휴대폰)가 사용자 동작 밖의 재생을 막음 → 탭해서 재생 */
+export type PlayerState = { key: string | null; status: "idle" | "loading" | "playing" | "paused" | "blocked" };
 
 let audio: HTMLAudioElement | null = null;
 let state: PlayerState = { key: null, status: "idle" };
+/** audio.src가 가리키는 곡의 key (다른 곡의 src를 되살려 재생하는 일을 막는다) */
+let loadedKey: string | null = null;
+/**
+ * 재생 요청 번호. 새 재생·정지·'없음' 표시마다 올린다.
+ * 요청이 비동기로 늦게 도착했을 때 번호가 달라졌으면(그 사이 다른 카드로 넘어감) 결과를 버린다.
+ */
+let seq = 0;
 const listeners = new Set<(s: PlayerState) => void>();
 
 function emit(next: PlayerState) {
@@ -175,13 +183,24 @@ function getAudio(): HTMLAudioElement {
   if (!audio) {
     audio = new Audio();
     audio.preload = "none";
-    audio.addEventListener("ended", () => emit({ key: state.key, status: "paused" }));
+    audio.addEventListener("ended", () => {
+      if (state.key) emit({ key: state.key, status: "paused" });
+    });
     audio.addEventListener("pause", () => {
       if (state.status === "playing") emit({ key: state.key, status: "paused" });
     });
-    audio.addEventListener("playing", () => emit({ key: state.key, status: "playing" }));
+    audio.addEventListener("playing", () => {
+      if (state.key) emit({ key: state.key, status: "playing" });
+    });
   }
   return audio;
+}
+
+/** a.play() 실패 처리: 요청이 아직 최신일 때만 상태를 바꾼다. 브라우저가 막은 것이면 blocked */
+function onPlayFail(key: string, my: number, e: unknown) {
+  if (my !== seq) return;
+  const blocked = e instanceof DOMException && e.name === "NotAllowedError";
+  emit({ key, status: blocked ? "blocked" : "idle" });
 }
 
 export const player = {
@@ -194,22 +213,29 @@ export const player = {
       listeners.delete(fn);
     };
   },
-  /** 재생할 때마다 미리듣기 URL을 새로 받아 재생 */
+  /** 미리듣기 주소를 받아서 재생. 받는 동안 loading, 그 사이 다른 곡 요청이 오면 결과를 버린다 */
   async play(key: string, resolve: () => Promise<PreviewResult | null>): Promise<PreviewResult | null> {
+    const my = ++seq;
     const a = getAudio();
-    a.pause();
+    a.pause(); // 이전 곡은 받는 동안에도 즉시 멈춘다
     emit({ key, status: "loading" });
-    const p = await resolve();
-    if (state.key !== key) return p; // 그 사이 다른 곡을 눌렀다
+    let p: PreviewResult | null = null;
+    try {
+      p = await resolve();
+    } catch {
+      p = null;
+    }
+    if (my !== seq) return p; // 그 사이 다른 곡을 눌렀거나 정지했다
     if (!p) {
       emit({ key, status: "idle" });
       return null;
     }
     a.src = p.url;
+    loadedKey = key;
     try {
       await a.play();
-    } catch {
-      emit({ key, status: "idle" });
+    } catch (e) {
+      onPlayFail(key, my, e);
       return null;
     }
     return p;
@@ -219,21 +245,31 @@ export const player = {
    * 스와이프·탭 이벤트 처리 안에서 부른다.
    */
   playNow(key: string, p: PreviewResult): void {
+    const my = ++seq;
     const a = getAudio();
     a.pause();
     emit({ key, status: "loading" });
     a.src = p.url;
-    a.play().catch(() => {
-      if (state.key === key) emit({ key, status: "idle" });
-    });
+    loadedKey = key;
+    a.play().catch((e) => onPlayFail(key, my, e));
+  },
+  /** 이 카드는 재생할 미리듣기가 없다: 이전 곡을 멈추고 이 카드만 선택된 상태로 둔다 */
+  markNone(key: string) {
+    seq++;
+    audio?.pause();
+    emit({ key, status: "idle" });
   },
   toggle(key: string) {
     const a = getAudio();
-    if (state.key !== key) return;
-    if (a.paused) void a.play();
-    else a.pause();
+    // 받는 중이거나, 지금 src가 이 곡이 아니면 아무것도 하지 않는다 (이전 곡이 되살아나는 것 방지)
+    if (state.key !== key || loadedKey !== key || state.status === "loading") return;
+    if (a.paused) {
+      const my = ++seq;
+      a.play().catch((e) => onPlayFail(key, my, e));
+    } else a.pause();
   },
   stop() {
+    seq++;
     audio?.pause();
     emit({ key: null, status: "idle" });
   },

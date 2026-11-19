@@ -350,7 +350,8 @@ export class Deck {
   private running = false;
   private exhausted = false;
   private listeners = new Set<(s: DeckSnapshot) => void>();
-  private previewLoading = new Set<string>();
+  /** 곡별 미리듣기 조회 (진행 중·완료). 앞 카드 미리 받기와 재생 요청이 같은 조회를 함께 쓴다. 메모리에만 둔다 */
+  private previews = new Map<string, Promise<PreviewResult | null>>();
 
   constructor() {
     this.seenList = loadSeen();
@@ -550,12 +551,14 @@ export class Deck {
 
   /** 지금 보이는 카드는 두고, 나머지 대기열 카드를 후보로 돌려 새 기준으로 다시 고른다 */
   private requeue() {
-    if (this.queue.length <= 1) return;
-    const rest = this.queue.splice(1);
-    this.pool.unshift(...rest);
-    this.served = Math.max(0, this.served - rest.length);
-    this.recentArtists = this.queue.map((c) => c.primaryArtist).slice(-(DECK.ARTIST_WINDOW - 1));
-    this.fillQueue();
+    if (this.queue.length > 1) {
+      const rest = this.queue.splice(1);
+      this.pool.unshift(...rest);
+      this.served = Math.max(0, this.served - rest.length);
+      this.recentArtists = this.queue.map((c) => c.primaryArtist).slice(-(DECK.ARTIST_WINDOW - 1));
+      this.fillQueue();
+    }
+    // 새로 앞에 온 카드는 미리듣기가 없을 수 있으니 바로 받아 둔다 (넘길 때 바로 재생되도록)
     this.prefetch();
   }
 
@@ -879,29 +882,31 @@ export class Deck {
     }
   }
 
-  /** 앞쪽 카드 미리듣기 주소를 미리 받아 둔다 (메모리에만, 저장하지 않음) */
+  /** 곡 하나의 미리듣기 조회. 같은 곡은 한 번만 받고, 결과는 대기열·후보의 같은 id 카드에 모두 넣는다 */
+  private fetchPreview(c: { id: string; isrc?: string; title: string; artist: string }): Promise<PreviewResult | null> {
+    let p = this.previews.get(c.id);
+    if (!p) {
+      p = findPreview({ isrc: c.isrc, title: c.title, artist: c.artist })
+        .catch(() => null)
+        .then((r) => {
+          for (const x of [...this.queue, ...this.pool]) if (x.id === c.id) x.preview = r;
+          this.emit();
+          return r;
+        });
+      this.previews.set(c.id, p);
+    }
+    return p;
+  }
+
+  /** 앞쪽 카드 미리듣기 주소를 미리 받아 둔다 */
   private prefetch() {
     for (const c of this.queue.slice(0, DECK.PREFETCH)) {
-      if (c.preview !== undefined || this.previewLoading.has(c.id)) continue;
-      this.previewLoading.add(c.id);
-      findPreview({ isrc: c.isrc, title: c.title, artist: c.artist })
-        .catch(() => null)
-        .then((p) => {
-          this.previewLoading.delete(c.id);
-          c.preview = p;
-          this.emit();
-        });
+      if (c.preview === undefined) void this.fetchPreview(c);
     }
   }
 
-  /** 지금 카드 미리듣기가 아직 없으면 받아 온다 (재생 버튼용) */
-  async ensurePreview(id: string): Promise<PreviewResult | null> {
-    const c = this.queue.find((x) => x.id === id);
-    if (!c) return null;
-    if (c.preview !== undefined) return c.preview;
-    const p = await findPreview({ isrc: c.isrc, title: c.title, artist: c.artist });
-    c.preview = p;
-    this.emit();
-    return p;
+  /** 재생 버튼·넘길 때 쓰는 미리듣기 조회 (미리 받는 중이면 그 결과를 기다린다) */
+  ensurePreview(card: { id: string; isrc?: string; title: string; artist: string }): Promise<PreviewResult | null> {
+    return this.fetchPreview(card);
   }
 }
