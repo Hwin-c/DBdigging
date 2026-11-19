@@ -13,11 +13,15 @@ import {
 
 /**
  * 같은 사람 × 소리 유사도 추천.
- * 후보: 지금 곡의 크레딧 인물 최대 4명 × 1명당 최대 5곡 (work면 대표 recording 1개), 같은 제목은 하나만.
+ * 후보: 지금 곡의 크레딧 인물 최대 4명에서 돌아가며 1곡씩 (work면 대표 recording 1개), 같은 제목은 하나만.
+ * 처음에는 8곡만 모으고, "더 보기"마다 8곡씩 추가한다.
  */
 
 export const MAX_PEOPLE = 4;
-export const PER_PERSON = 5;
+export const BATCH = 8;
+/** 인물 1명당 후보 대기열 길이 (같은 역할 곡 + 나머지) */
+const QUEUE_SAME_ROLE = 16;
+const QUEUE_OTHER = 8;
 
 export interface Via {
   personId: string;
@@ -42,10 +46,12 @@ export interface Recommendation {
 
 export interface RecProgress {
   items: Recommendation[];
-  /** 수집한 후보 수 / 최대 후보 수 */
-  done: number;
-  max: number;
+  /** 이번 묶음까지의 목표 후보 수 */
+  target: number;
+  /** 지금 묶음 수집이 끝났는지 */
   finished: boolean;
+  /** 더 모을 후보가 없음 */
+  exhausted: boolean;
   /** 소리 데이터를 아예 가져오지 못함 (ReccoBeats 실패) */
   audioUnavailable: boolean;
 }
@@ -82,16 +88,12 @@ function spread<T>(list: T[], n: number): T[] {
   return out;
 }
 
-function chooseItems(items: PersonItem[], via: Via, skip: Set<string>): PersonItem[] {
-  const fresh = items.filter((it) => !skip.has(normalizeTitle(it.title)));
-  // 지금 곡과 같은 역할로 참여한 곡을 먼저, 모자라면 나머지에서
+/** 인물의 후보 대기열: 지금 곡과 같은 역할로 참여한 곡을 먼저(목록 전체에서 고르게), 그다음 나머지 */
+function candidateQueue(items: PersonItem[], via: Via, currentTitle: string): PersonItem[] {
+  const fresh = items.filter((it) => normalizeTitle(it.title) !== currentTitle);
   const sameRole = fresh.filter((it) => it.roles.includes(via.role));
-  const picked = spread(sameRole, PER_PERSON + 2);
-  if (picked.length < PER_PERSON + 2) {
-    const rest = fresh.filter((it) => !sameRole.includes(it));
-    picked.push(...spread(rest, PER_PERSON + 2 - picked.length));
-  }
-  return picked;
+  const rest = fresh.filter((it) => !it.roles.includes(via.role));
+  return [...spread(sameRole, QUEUE_SAME_ROLE), ...spread(rest, QUEUE_OTHER)];
 }
 
 export function rankRecommendations(items: Recommendation[]): Recommendation[] {
@@ -116,117 +118,167 @@ export function scoreAndRank(items: Recommendation[], base: AudioFeatures | null
   );
 }
 
+interface PersonState {
+  via: Via;
+  /** undefined: 아직 안 불러옴 */
+  queue?: PersonItem[];
+  exhausted: boolean;
+}
+
 /**
- * 후보를 수집하는 대로 onUpdate로 알린다. MusicBrainz 요청은 낮은 우선순위로 보내고 signal로 취소한다.
+ * 추천 후보 수집기. more()를 부를 때마다 BATCH곡씩 더 모으고 onUpdate로 알린다.
+ * MusicBrainz 요청은 낮은 우선순위로 보내고 signal로 취소한다.
+ * 재시도(2초·4초) 뒤에도 실패한 후보·인물은 건너뛰고 나머지로 채운다.
  */
-export async function collectRecommendations(
-  d: RecordingDetail,
-  onUpdate: (p: RecProgress) => void,
-  signal: AbortSignal,
-): Promise<void> {
-  const people = pickPeople(d.credits);
-  const max = people.length * PER_PERSON;
-  const items: Recommendation[] = [];
-  const byTitle = new Map<string, Recommendation>();
-  const seen = new Set<string>([normalizeTitle(d.title)]);
-  let done = 0;
-  let order = 0;
-  let audioOk = false;
-  let audioFailed = 0;
-  const opts = { low: true, signal };
+export class RecCollector {
+  private people: PersonState[];
+  private items: Recommendation[] = [];
+  private byTitle = new Map<string, Recommendation>();
+  private seen: Set<string>;
+  private ptr = 0;
+  private order = 0;
+  private target = 0;
+  private busy = false;
+  private exhausted = false;
+  private audioOk = false;
+  private audioFailed = 0;
+  private opts: { low: true; signal: AbortSignal };
 
-  const emit = (finished = false) => {
-    if (signal.aborted) return;
-    onUpdate({
-      items: items.map((r) => ({ ...r, via: [...r.via] })),
-      done,
-      max,
-      finished,
-      audioUnavailable: !audioOk && audioFailed > 0,
+  constructor(
+    private d: RecordingDetail,
+    private onUpdate: (p: RecProgress) => void,
+    private signal: AbortSignal,
+  ) {
+    this.people = pickPeople(d.credits).map((via) => ({ via, exhausted: false }));
+    this.seen = new Set([normalizeTitle(d.title)]);
+    this.opts = { low: true, signal };
+    this.exhausted = this.people.length === 0;
+  }
+
+  get isBusy() {
+    return this.busy;
+  }
+
+  private emit() {
+    if (this.signal.aborted) return;
+    this.onUpdate({
+      items: this.items.map((r) => ({ ...r, via: [...r.via] })),
+      target: this.target,
+      finished: !this.busy,
+      exhausted: this.exhausted,
+      audioUnavailable: !this.audioOk && this.audioFailed > 0,
     });
-  };
-  emit();
+  }
 
-  const audioJobs: Promise<void>[] = [];
-  const loadAudio = (r: Recommendation) => {
+  private loadAudio(r: Recommendation, jobs: Promise<void>[]) {
     if (!r.isrc) {
       r.features = null;
       return;
     }
-    audioJobs.push(
+    jobs.push(
       getFeatures(r.isrc).then(
         (f) => {
           r.features = f;
-          if (f) audioOk = true;
-          emit();
+          if (f) this.audioOk = true;
+          this.emit();
         },
         () => {
           r.features = null;
-          audioFailed++;
-          emit();
+          this.audioFailed++;
+          this.emit();
         },
       ),
     );
-  };
+  }
 
-  try {
-    for (const via of people) {
-      let credits;
+  /** 인물 한 명에서 새 후보 1곡을 찾는다. 찾으면 true */
+  private async takeOne(p: PersonState, jobs: Promise<void>[]): Promise<boolean> {
+    if (!p.queue) {
       try {
-        credits = await getArtistCredits(via.personId, opts);
+        p.queue = candidateQueue(
+          (await getArtistCredits(p.via.personId, this.opts)).items,
+          p.via,
+          normalizeTitle(this.d.title),
+        );
       } catch (e) {
-        if (e instanceof AbortedError || signal.aborted) return;
-        continue; // 이 인물은 건너뜀
-      }
-      const candidates = chooseItems(credits.items, via, seen);
-      let got = 0;
-      for (const it of candidates) {
-        if (got >= PER_PERSON) break;
-        if (signal.aborted) return;
-        // 이미 다른 인물로 수집된 같은 제목이면 근거만 추가
-        const key = normalizeTitle(it.title);
-        const existing = byTitle.get(key);
-        if (existing) {
-          if (!existing.via.some((v) => v.personId === via.personId)) {
-            existing.via.push(via);
-            emit();
-          }
-          continue;
-        }
-        let rec;
-        try {
-          rec =
-            it.kind === "work"
-              ? await resolveWorkToRecording(it.id, opts)
-              : await getRecordingLite(it.id, opts);
-        } catch (e) {
-          if (e instanceof AbortedError || signal.aborted) return;
-          rec = undefined;
-        }
-        if (!rec || rec.id === d.id) continue;
-        const rkey = normalizeTitle(rec.title) || key;
-        if (seen.has(rkey) || seen.has(key)) continue;
-        seen.add(rkey);
-        seen.add(key);
-        const r: Recommendation = {
-          id: rec.id,
-          title: rec.title,
-          artist: rec.artist,
-          isrc: rec.isrcs[0],
-          via: [via],
-          order: order++,
-        };
-        items.push(r);
-        byTitle.set(key, r);
-        got++;
-        done++;
-        loadAudio(r);
-        emit();
+        if (e instanceof AbortedError || this.signal.aborted) throw new AbortedError();
+        p.exhausted = true; // 이 인물은 건너뜀
+        return false;
       }
     }
-    await Promise.all(audioJobs);
-  } finally {
-    emit(true);
+    while (p.queue.length) {
+      const it = p.queue.shift()!;
+      const key = normalizeTitle(it.title);
+      // 이미 다른 인물로 수집된 같은 제목이면 근거만 추가
+      const existing = this.byTitle.get(key);
+      if (existing) {
+        if (!existing.via.some((v) => v.personId === p.via.personId)) {
+          existing.via.push(p.via);
+          this.emit();
+        }
+        continue;
+      }
+      if (this.seen.has(key)) continue;
+      let rec;
+      try {
+        rec =
+          it.kind === "work"
+            ? await resolveWorkToRecording(it.id, this.opts)
+            : await getRecordingLite(it.id, this.opts);
+      } catch (e) {
+        if (e instanceof AbortedError || this.signal.aborted) throw new AbortedError();
+        continue; // 실패한 후보는 건너뜀
+      }
+      if (!rec || rec.id === this.d.id) continue;
+      const rkey = normalizeTitle(rec.title) || key;
+      if (this.seen.has(rkey)) continue;
+      this.seen.add(rkey);
+      this.seen.add(key);
+      const r: Recommendation = {
+        id: rec.id,
+        title: rec.title,
+        artist: rec.artist,
+        isrc: rec.isrcs[0],
+        via: [p.via],
+        order: this.order++,
+      };
+      this.items.push(r);
+      this.byTitle.set(key, r);
+      this.loadAudio(r, jobs);
+      this.emit();
+      return true;
+    }
+    p.exhausted = true;
+    return false;
+  }
+
+  /** BATCH곡 더 모은다. 인물들을 돌아가며 1곡씩 */
+  async more(n = BATCH): Promise<void> {
+    if (this.busy || this.exhausted || this.signal.aborted) return;
+    this.busy = true;
+    this.target = this.items.length + n;
+    this.emit();
+    const jobs: Promise<void>[] = [];
+    try {
+      while (this.items.length < this.target) {
+        const live = this.people.filter((p) => !p.exhausted);
+        if (!live.length) {
+          this.exhausted = true;
+          break;
+        }
+        const p = this.people[this.ptr++ % this.people.length];
+        if (p.exhausted) continue;
+        await this.takeOne(p, jobs);
+      }
+      if (this.people.every((p) => p.exhausted)) this.exhausted = true;
+      await Promise.all(jobs);
+    } catch (e) {
+      if (!(e instanceof AbortedError)) throw e;
+      return;
+    } finally {
+      this.busy = false;
+      this.emit();
+    }
   }
 }
 

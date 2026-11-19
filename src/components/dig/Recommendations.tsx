@@ -1,10 +1,11 @@
 "use client";
 import { Loader2 } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { AudioFeatures } from "@/lib/audio";
 import type { RecordingDetail } from "@/lib/mb/api";
 import {
-  collectRecommendations,
+  BATCH,
+  RecCollector,
   pickPeople,
   reasonText,
   scoreAndRank,
@@ -26,12 +27,18 @@ export function Recommendations({
   onOpen: (id: string) => void;
 }) {
   const [prog, setProg] = useState<RecProgress | null>(null);
+  const collector = useRef<RecCollector | null>(null);
 
   useEffect(() => {
     const ctl = new AbortController();
     setProg(null);
-    void collectRecommendations(d, setProg, ctl.signal);
-    return () => ctl.abort();
+    const c = new RecCollector(d, setProg, ctl.signal);
+    collector.current = c;
+    void c.more().catch(() => undefined);
+    return () => {
+      ctl.abort();
+      if (collector.current === c) collector.current = null;
+    };
   }, [d]);
 
   const ranked = useMemo(() => scoreAndRank(prog?.items ?? [], base), [prog, base]);
@@ -49,7 +56,7 @@ export function Recommendations({
             collecting ? (
               <span className="inline-flex items-center gap-1">
                 <Loader2 className="h-3 w-3 animate-spin" />
-                후보 수집 중 {prog.done}/{prog.max}
+                후보 수집 중 {prog.items.length}/{prog.target}
               </span>
             ) : (
               `${ranked.length}곡`
@@ -105,6 +112,16 @@ export function Recommendations({
           </li>
         ))}
       </ol>
+
+      {prog && !collecting && !prog.exhausted && ranked.length > 0 && (
+        <button
+          type="button"
+          onClick={() => void collector.current?.more().catch(() => undefined)}
+          className="mt-3 w-full rounded-lg border border-slate-700 py-2 text-sm text-slate-300 hover:border-slate-500"
+        >
+          {BATCH}곡 더 보기
+        </button>
+      )}
     </Card>
   );
 }

@@ -1,4 +1,4 @@
-import type { RunOptions } from "../cache";
+import { TwoLevelCache, type RunOptions } from "../cache";
 import { mbGet } from "./client";
 import type {
   MbArtistCredit,
@@ -11,6 +11,12 @@ import type {
 } from "./types";
 
 /* ───────────────────────── 공통 ───────────────────────── */
+
+/**
+ * 가공한 결과 캐시 (localStorage 7일). 인물·작품 원본 응답은 커서 저장 한도를 넘기 쉬우므로
+ * 필요한 필드만 남긴 결과를 따로 저장해, 한 번 본 인물·작품은 다시 호출하지 않는다.
+ */
+const derived = new TwoLevelCache("mbd:", 400_000);
 
 export interface ArtistLite {
   id: string;
@@ -85,6 +91,8 @@ export interface SearchHit {
   id: string;
   title: string;
   artist: string;
+  /** artist-credit의 개별 이름 (가수 일치 판단용) */
+  artistNames: string[];
   disambiguation: string;
   firstReleaseDate: string;
   releaseTitle: string;
@@ -97,10 +105,12 @@ const esc = (s: string) => s.replace(LUCENE_SPECIAL, "\\$&");
 const quote = (s: string) => `"${s.replace(/["\\]/g, "\\$&")}"`;
 
 function toHit(r: MbSearchRecording): SearchHit {
+  const ac = r["artist-credit"] ?? [];
   return {
     id: r.id,
     title: r.title,
-    artist: creditText(r["artist-credit"]),
+    artist: creditText(ac),
+    artistNames: ac.flatMap((c) => [c.name, c.artist.name]),
     disambiguation: r.disambiguation ?? "",
     firstReleaseDate: r["first-release-date"] ?? "",
     releaseTitle: r.releases?.[0]?.title ?? "",
@@ -120,85 +130,107 @@ function tokens(q: string): string[] {
 function words(s: string): string[] {
   return s
     .toLowerCase()
-    .split(/[sp{P}p{S}_]+/u)
+    .split(/[\s\p{P}\p{S}_]+/u)
     .filter(Boolean);
 }
 
 /**
  * 질의 단어 중 제목·가수의 '단어'와 일치하는 수.
  * 부분 문자열이 아니라 단어 단위로 본다 (예: "AESPAsupernova_phixelremix"는 Supernova·aespa에 맞지 않음).
- * 여러 단어로 된 제목은 질의 안에 이어 붙은 형태도 허용한다.
+ * 여러 단어로 된 제목·가수는 질의 안에 이어 붙은 형태도 허용한다.
  */
 function matchCount(q: string, h: SearchHit): number {
-  const ws = new Set([...words(h.title), ...words(h.artist)]);
-  const joinedTitle = normalizeLoose(h.title);
-  const joinedArtist = normalizeLoose(h.artist);
-  return tokens(q).filter((t) => ws.has(t) || t === joinedTitle || t === joinedArtist).length;
+  const ws = new Set([...words(h.title), ...h.artistNames.flatMap(words), ...words(h.artist)]);
+  const joined = new Set([normalizeLoose(h.title), normalizeLoose(h.artist), ...h.artistNames.map(normalizeLoose)]);
+  return tokens(q).filter((t) => ws.has(t) || joined.has(t)).length;
 }
 
-/** 상위 결과 중 질의 단어를 모두 (제목+가수에서 단어 단위로) 포함하는 결과가 있으면 '맞는 결과'로 본다 */
-function looksRelevant(q: string, hits: SearchHit[]): boolean {
-  const n = tokens(q).length;
-  return hits.slice(0, 5).some((h) => matchCount(q, h) === n);
-}
+/** 원곡이 아닌 버전 표기. 질의에 같은 단어가 없으면 감점 */
+const VERSION_WORDS = ["cover", "remix", "karaoke", "lullaby", "instrumental", "inst", "live", "커버", "리믹스"];
 
-function rank(hits: SearchHit[], q: string): SearchHit[] {
-  return [...hits].sort(
-    (a, b) =>
-      matchCount(q, b) - matchCount(q, a) ||
-      b.score - a.score ||
-      Number(b.hasIsrc) - Number(a.hasIsrc) ||
-      Number(!b.disambiguation) - Number(!a.disambiguation),
-  );
-}
-
-async function runQuery(query: string): Promise<SearchHit[]> {
-  const res = await mbGet<MbSearchResponse>("recording", { query, limit: "10" });
-  return (res.recordings ?? []).map(toHit);
+function versionWords(text: string): string[] {
+  const ws = new Set(words(text));
+  const lower = text.toLowerCase();
+  // 영문은 단어 단위, 한글은 부분 문자열 (예: "리믹스버전")
+  return VERSION_WORDS.filter((w) => (/^[a-z]+$/.test(w) ? ws.has(w) : lower.includes(w)));
 }
 
 /** 질의를 (제목, 가수) 후보로 나눈다. "제목 - 가수" 형식이면 그대로 사용 */
 function splitCandidates(q: string): Array<[string, string]> {
   const sep = q.split(/\s+[-–/|]\s+/);
   if (sep.length === 2 && sep[0].trim() && sep[1].trim()) return [[sep[0].trim(), sep[1].trim()]];
-  const words = q.trim().split(/\s+/);
-  if (words.length < 2) return [];
+  const ws = q.trim().split(/\s+/);
+  if (ws.length < 2) return [];
   const out: Array<[string, string]> = [];
-  out.push([words.slice(0, -1).join(" "), words[words.length - 1]]); // 제목 … 가수
-  out.push([words.slice(1).join(" "), words[0]]); // 가수 제목 …
-  if (words.length >= 4) out.push([words.slice(0, -2).join(" "), words.slice(-2).join(" ")]);
+  for (let k = 1; k <= Math.min(3, ws.length - 1); k++) {
+    out.push([ws.slice(0, -k).join(" "), ws.slice(-k).join(" ")]); // 제목 … 가수
+    out.push([ws.slice(k).join(" "), ws.slice(0, k).join(" ")]); // 가수 … 제목
+  }
   return out;
+}
+
+/** 결과 점수: 가수 일치·제목 일치·ISRC 가점, 질의에 없는 버전 표기 감점 */
+function relevance(h: SearchHit, q: string, splits: Array<[string, string]>): number {
+  let s = matchCount(q, h) * 10;
+  const names = new Set([normalizeLoose(h.artist), ...h.artistNames.map(normalizeLoose)]);
+  const title = normalizeTitle(h.title);
+  let best = 0;
+  for (const [t, a] of splits) {
+    const artistHit = names.has(normalizeLoose(a));
+    const titleHit = title === normalizeTitle(t);
+    best = Math.max(best, (artistHit ? 40 : 0) + (titleHit ? 20 : 0));
+  }
+  s += best;
+  const qWords = new Set(versionWords(q));
+  const vs = versionWords(`${h.title} ${h.disambiguation}`).filter((w) => !qWords.has(w));
+  if (vs.length) s -= 50;
+  if (h.hasIsrc) s += 8;
+  if (h.disambiguation) s -= 1;
+  return s;
+}
+
+function rerank(hits: SearchHit[], q: string, splits: Array<[string, string]>): SearchHit[] {
+  const seen = new Set<string>();
+  return hits
+    .filter((h) => !seen.has(h.id) && seen.add(h.id))
+    .filter((h) => matchCount(q, h) > 0) // 질의 단어가 제목·가수 어디에도 없으면 제외
+    .map((h) => ({ h, r: relevance(h, q, splits) }))
+    .sort((a, b) => b.r - a.r || b.h.score - a.h.score)
+    .map((x) => x.h)
+    .slice(0, 15);
+}
+
+async function runQuery(query: string, limit = 25): Promise<SearchHit[]> {
+  const res = await mbGet<MbSearchResponse>("recording", { query, limit: String(limit) });
+  return (res.recordings ?? []).map(toHit);
 }
 
 /**
  * 녹음 검색.
- * 1) 일반 검색 → 2) recording:"제목" AND artist:"가수" → 3) "제목" 가수
- * 일반 검색이 0건이거나 질의 단어와 맞지 않는 결과뿐이면 2·3단계로 재검색한다.
+ * 1) 질의를 (제목, 가수)로 나눌 수 있으면 나누는 모든 경우를 OR로 묶어
+ *    (recording:"제목" AND artist:"가수") 한 번에 요청
+ * 2) 결과가 없을 때만 일반 검색
+ * 결과는 가수 일치·버전 표기·ISRC로 다시 정렬하고, 질의 단어가 하나도 없는 결과는 뺀다.
  */
 export async function searchRecordings(q: string): Promise<SearchHit[]> {
-  const query = q.trim();
+  const query = q.trim().replace(/\s+/g, " ");
   if (!query) return [];
+  const splits = splitCandidates(query);
 
-  const sep = splitCandidates(query);
-  const explicit = sep.length === 1 && /\s+[-–/|]\s+/.test(query);
-
-  let first: SearchHit[] = [];
-  if (!explicit) {
-    first = await runQuery(esc(query));
-    if (first.length && looksRelevant(query, first)) return rank(first, query);
-  }
-
-  for (const [title, artist] of sep) {
+  if (splits.length) {
+    const fielded = splits.map(([t, a]) => `(recording:${quote(t)} AND artist:${quote(a)})`).join(" OR ");
     let hits: SearchHit[] = [];
     try {
-      hits = await runQuery(`recording:${quote(title)} AND artist:${quote(artist)}`);
+      hits = await runQuery(fielded);
     } catch {
       hits = [];
     }
-    if (!hits.length) hits = await runQuery(`${quote(title)} ${esc(artist)}`);
-    if (hits.length && looksRelevant(`${title} ${artist}`, hits)) return rank(hits, `${title} ${artist}`);
+    const ranked = rerank(hits, query, splits);
+    if (ranked.length) return ranked;
   }
-  return rank(first, query);
+
+  const plain = query.replace(/\s+[-–/|]\s+/, " ");
+  return rerank(await runQuery(esc(plain)), plain, splits);
 }
 
 /* ───────────────────────── 곡 상세 ───────────────────────── */
@@ -321,6 +353,15 @@ export interface PersonDetail {
 const NON_ORIGINAL = /(inst|instrumental|mr|remix|live|karaoke|acoustic|ver\.|version|edit|mix|demo|sped|slowed|반주|라이브)/i;
 
 export async function getArtistCredits(mbid: string, opts?: RunOptions): Promise<PersonDetail> {
+  const ck = `artist:${mbid}`;
+  const hit = derived.get<PersonDetail>(ck);
+  if (hit) return hit;
+  const detail = await fetchArtistCredits(mbid, opts);
+  derived.set(ck, detail);
+  return detail;
+}
+
+async function fetchArtistCredits(mbid: string, opts?: RunOptions): Promise<PersonDetail> {
   const a = await mbGet<MbArtistLookup>(`artist/${mbid}`, { inc: "work-rels+recording-rels" }, opts);
   const byTitle = new Map<string, PersonItem>();
 
@@ -453,7 +494,12 @@ export async function resolveWorkToRecording(
   workId: string,
   opts?: RunOptions,
 ): Promise<WorkRecording | undefined> {
-  return pickRepresentative(await getWorkRecordings(workId, opts));
+  const ck = `work-rep:${workId}`;
+  const hit = derived.get<WorkRecording | null>(ck);
+  if (hit !== undefined) return hit ?? undefined;
+  const rep = pickRepresentative(await getWorkRecordings(workId, opts));
+  derived.set(ck, rep ?? null);
+  return rep;
 }
 
 /**

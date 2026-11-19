@@ -197,33 +197,37 @@ export function featureVector(f: AudioFeatures): number[] {
   ];
 }
 
-export function cosine(a: number[], b: number[]): number {
-  let dot = 0;
-  let na = 0;
-  let nb = 0;
+/**
+ * 소리 유사도 = 1 − d / 3. d는 9차원 벡터(각 0~1)의 유클리드 거리, 3 = √9 (가능한 최대 거리).
+ * 코사인은 모든 값이 0 이상인 벡터에서 높게 몰리고 크기 차이(에너지 0.3 vs 0.9)를 덜 반영해서 바꿨다.
+ */
+export function euclidean(a: number[], b: number[]): number {
+  let sum = 0;
   for (let i = 0; i < a.length; i++) {
-    dot += a[i] * b[i];
-    na += a[i] * a[i];
-    nb += b[i] * b[i];
+    const x = Math.min(Math.max(a[i], 0), 1) - Math.min(Math.max(b[i], 0), 1);
+    sum += x * x;
   }
-  return na && nb ? dot / Math.sqrt(na * nb) : 0;
+  return Math.sqrt(sum);
 }
 
 export function similarity(a: AudioFeatures, b: AudioFeatures): number {
-  return cosine(featureVector(a), featureVector(b));
+  const va = featureVector(a);
+  return Math.max(0, 1 - euclidean(va, featureVector(b)) / Math.sqrt(va.length));
 }
 
-/** 두 곡에 공통된 두드러진 특성 (근거 문구용) */
+/** 근거 문구: 에너지·밝기·어쿠스틱·춤추기 좋음·템포 중 차이가 가장 작은 2개. 예: "에너지·밝기가 비슷함" */
 export function sharedTraits(a: AudioFeatures, b: AudioFeatures): string[] {
-  const out: string[] = [];
-  const both = (name: string, x: number, y: number) => {
-    const la = level(x);
-    if (la !== "중간" && la === level(y)) out.push(`둘 다 ${name} ${la}`);
-  };
-  both("에너지", a.energy, b.energy);
-  both("밝기", a.valence, b.valence);
-  both("어쿠스틱", a.acousticness, b.acousticness);
-  both("춤추기 좋음", a.danceability, b.danceability);
-  if (Math.abs(a.tempo - b.tempo) <= 8) out.push(`BPM 비슷 (${Math.round(a.tempo)}·${Math.round(b.tempo)})`);
-  return out;
+  const dims: Array<[string, number]> = [
+    ["에너지", Math.abs(a.energy - b.energy)],
+    ["밝기", Math.abs(a.valence - b.valence)],
+    ["어쿠스틱", Math.abs(a.acousticness - b.acousticness)],
+    ["춤추기 좋음", Math.abs(a.danceability - b.danceability)],
+    ["템포", Math.abs(Math.min(a.tempo / 200, 1) - Math.min(b.tempo / 200, 1))],
+  ];
+  const two = dims.sort((x, y) => x[1] - y[1]).slice(0, 2).map((d) => d[0]);
+  const last = two[two.length - 1];
+  // 받침 유무로 조사 선택 (에너지가 / 춤추기 좋음이)
+  const code = last.charCodeAt(last.length - 1) - 0xac00;
+  const josa = code >= 0 && code < 11172 && code % 28 !== 0 ? "이" : "가";
+  return [`${two.join("·")}${josa} 비슷함`];
 }
