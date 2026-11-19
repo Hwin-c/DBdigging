@@ -72,7 +72,7 @@ export function DigFlow({ snap, onFocus }: { snap: DeckSnapshot; onFocus: (id: s
 
       {/* 지금 파는 사람들 */}
       {people.length > 0 && (
-        <section aria-label="지금 파는 사람들" className="mt-4">
+        <section aria-label="지금 파는 사람들" className="mt-3">
           <div className="flex items-baseline justify-between gap-2">
             <h2 className="text-[13px] text-[#6E6E73]">지금 파는 사람들</h2>
             {focused && (
@@ -85,7 +85,8 @@ export function DigFlow({ snap, onFocus }: { snap: DeckSnapshot; onFocus: (id: s
               </button>
             )}
           </div>
-          <ul className="mt-2 flex flex-wrap gap-1.5">
+          {/* 모바일은 한 줄 가로 스크롤 (카드와 버튼이 화면 안에 들어오도록), 넓은 화면은 줄바꿈 */}
+          <ul className="-mx-4 mt-2 flex gap-1.5 overflow-x-auto px-4 pb-1 md:mx-0 md:flex-wrap md:overflow-visible md:px-0">
             {people.map((p) => {
               const on = p.id === snap.focusId;
               return (
@@ -96,7 +97,7 @@ export function DigFlow({ snap, onFocus }: { snap: DeckSnapshot; onFocus: (id: s
                     aria-pressed={on}
                     title={`${p.name} 비중 ${p.weight.toFixed(1)}${p.fromTitle ? `, ${p.fromTitle}에서 합류` : ""}`}
                     className={clsx(
-                      "flex min-h-[36px] items-center gap-2 rounded-full border px-3 text-[13px]",
+                      "flex min-h-[36px] shrink-0 items-center gap-2 whitespace-nowrap rounded-full border px-3 text-[13px]",
                       on ? "border-black bg-black text-white" : "border-[#E5E5E5] text-black hover:border-black",
                       snap.focusId && !on && "opacity-50",
                     )}

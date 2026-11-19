@@ -232,7 +232,7 @@ export function SwipeApp() {
 
           {/* 소리 방향: 대기열 정렬 기준만 바꾼다 */}
           {origin && (
-            <div role="radiogroup" aria-label="소리 방향" className="mt-4 flex gap-1 rounded-full bg-[#F2F2F2] p-1">
+            <div role="radiogroup" aria-label="소리 방향" className="mt-3 flex gap-1 rounded-full bg-[#F2F2F2] p-1">
               {SOUND_MODES.map((m) => (
                 <button
                   key={m.id}
@@ -251,7 +251,7 @@ export function SwipeApp() {
             </div>
           )}
 
-          <div className="relative mt-6 min-h-[520px]">
+          <div className="relative mt-5 min-h-[480px]">
             {leaving && (
               <div
                 key={leaving.n}
@@ -346,7 +346,7 @@ export function SwipeApp() {
           </div>
 
           {/* 조작 버튼: 항상 표시 */}
-          <div className="mt-6 flex items-start justify-center gap-10">
+          <div className="mt-4 flex items-start justify-center gap-10">
             {(
               [
                 { dir: "left", label: "넘기기", key: "←", icon: X, primary: false },
