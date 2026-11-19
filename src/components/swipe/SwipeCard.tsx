@@ -70,9 +70,20 @@ function Sleeve({
 }
 
 /** 이유 문장. 인물 이름은 눌러서 집중할 수 있는 버튼 */
-function Reason({ v, focused, onFocus }: { v: Via; focused: boolean; onFocus: (id: string) => void }) {
-  const text = reasonText(v);
-  const i = text.indexOf(v.name);
+function Reason({
+  v,
+  isOrigin,
+  focused,
+  onFocus,
+}: {
+  v: Via;
+  isOrigin?: boolean;
+  focused: boolean;
+  onFocus: (id: string) => void;
+}) {
+  const text = reasonText(v, isOrigin);
+  const prefix = v.fromTitle && !isOrigin ? `${v.fromTitle}에서 만난 ` : "";
+  const i = text.indexOf(v.name, prefix.length);
   const name = (
     <button
       type="button"
@@ -125,8 +136,8 @@ export function SwipeCard({
   const playing = status === "playing";
   const loadingPreview = status === "loading";
   const blocked = status === "blocked";
-  const level = base && card.features ? simLevel(base, card.features) : null;
-  const diffs = base && card.features ? soundDiff(base, card.features) : [];
+  const level = !card.isOrigin && base && card.features ? simLevel(base, card.features) : null;
+  const diffs = !card.isOrigin && base && card.features ? soundDiff(base, card.features) : [];
   const noPreview = card.preview === null;
   const yt = `https://www.youtube.com/results?search_query=${encodeURIComponent(`${card.title} ${card.artist}`)}`;
 
@@ -171,12 +182,15 @@ export function SwipeCard({
         </div>
 
         <ul className="mt-4 flex flex-wrap gap-1.5">
+          {card.isOrigin && (
+            <li className="rounded-full bg-black px-3 py-1.5 text-[13px] text-white">시작 곡</li>
+          )}
           {card.contrast && (
             <li className="rounded-full bg-black px-3 py-1.5 text-[13px] text-white">같은 사람, 다른 분위기</li>
           )}
           {card.via.map((v) => (
             <li key={v.personId}>
-              <Reason v={v} focused={focusId === v.personId} onFocus={onFocus} />
+              <Reason v={v} isOrigin={card.isOrigin} focused={focusId === v.personId} onFocus={onFocus} />
             </li>
           ))}
         </ul>

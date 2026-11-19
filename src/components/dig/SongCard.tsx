@@ -12,23 +12,32 @@ function fmtLength(ms: number | null): string {
   return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
 }
 
-/** 역할별 요약: "작곡 A · B · C" */
+/** 역할별 요약: "작곡 A · B · C" (동명이인은 artist.id 기준으로 분리하고 disambiguation으로 구분) */
 function roleSummary(d: RecordingDetail): Array<[string, string[]]> {
-  const m = new Map<string, string[]>();
+  const nameCounts = new Map<string, number>();
+  for (const c of d.credits) {
+    nameCounts.set(c.artist.name, (nameCounts.get(c.artist.name) ?? 0) + 1);
+  }
+  const labelOf = (c: RecordingDetail["credits"][number]) =>
+    (nameCounts.get(c.artist.name) ?? 0) > 1 && c.artist.disambiguation
+      ? `${c.artist.name} (${c.artist.disambiguation})`
+      : c.artist.name;
+
+  const m = new Map<string, Map<string, string>>();
   for (const c of d.credits) {
     for (const r of c.roles) {
       if (!isCoreRole(r)) continue;
       // 작사·작곡(writer)은 작곡과 작사 양쪽에 모두 보인다
       const targets = r === "작사·작곡" ? ["작곡", "작사"] : [r];
       for (const t of targets) {
-        const list = m.get(t) ?? [];
-        if (!list.includes(c.artist.name)) list.push(c.artist.name);
-        m.set(t, list);
+        const byId = m.get(t) ?? new Map<string, string>();
+        byId.set(c.artist.id, labelOf(c));
+        m.set(t, byId);
       }
     }
   }
   return [...m.entries()]
-    .map(([k, v]) => [k, v.sort((a, b) => a.localeCompare(b))] as [string, string[]])
+    .map(([k, byId]) => [k, [...byId.values()].sort((a, b) => a.localeCompare(b))] as [string, string[]])
     .sort((a, b) => roleOrder(a[0]) - roleOrder(b[0]));
 }
 
@@ -92,17 +101,46 @@ export function SongCard({
       <div className="mt-5">
         <SectionTitle aside={d.credits.length ? `${d.credits.length}명` : undefined}>만든 사람</SectionTitle>
         {d.credits.length === 0 ? (
-          <p className="text-sm text-slate-400">
-            MusicBrainz에 크레딧 정보가 아직 없습니다.{" "}
-            <a
-              className="underline hover:text-slate-200"
-              href={`https://musicbrainz.org/recording/${d.id}`}
-              target="_blank"
-              rel="noreferrer"
-            >
-              MusicBrainz에서 보기
-            </a>
-          </p>
+          <div>
+            <p className="text-sm text-slate-400">
+              MusicBrainz에 세부 제작 크레딧 정보가 아직 없어 가수를 기준으로 탐색합니다.{" "}
+              <a
+                className="underline hover:text-slate-200"
+                href={`https://musicbrainz.org/recording/${d.id}`}
+                target="_blank"
+                rel="noreferrer"
+              >
+                MusicBrainz에서 보기
+              </a>
+            </p>
+            {d.artists.length > 0 && (
+              <ul className="-mx-2 mt-2 divide-y divide-slate-800/70">
+                {d.artists.map((a) => (
+                  <li key={a.id}>
+                    <button
+                      type="button"
+                      onClick={() => onPerson(a.id, a.name)}
+                      aria-pressed={activePerson === a.id}
+                      className={clsx(
+                        "flex w-full items-start justify-between gap-3 rounded-md px-2 py-2 text-left hover:bg-slate-800/50",
+                        activePerson === a.id && "bg-slate-800/60",
+                      )}
+                    >
+                      <span className="min-w-0 flex-1 break-words">
+                        <span className="text-[15px] text-slate-100">{a.name}</span>
+                        {a.disambiguation && (
+                          <span className="ml-1.5 text-xs text-slate-500">{a.disambiguation}</span>
+                        )}
+                      </span>
+                      <span className="flex max-w-[60%] flex-wrap justify-end gap-1 pt-0.5">
+                        <RoleChip label="노래" />
+                      </span>
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
         ) : (
           <>
             {summary.length > 0 && (
