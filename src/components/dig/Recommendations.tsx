@@ -43,7 +43,7 @@ export function Recommendations({
 
   const ranked = useMemo(() => scoreAndRank(prog?.items ?? [], base), [prog, base]);
 
-  if (pickPeople(d.credits).length === 0) return null;
+  if (pickPeople(d.credits, d.artists).length === 0) return null;
 
   const collecting = !prog?.finished;
   const noBase = baseSettled && !base;

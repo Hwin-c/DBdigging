@@ -6,6 +6,7 @@ import {
   isCoreRole,
   normalizeTitle,
   resolveWorkToRecording,
+  type ArtistLite,
   type PersonCredit,
   type PersonItem,
   type RecordingDetail,
@@ -26,8 +27,10 @@ const QUEUE_OTHER = 8;
 export interface Via {
   personId: string;
   name: string;
+  disambiguation?: string;
   /** 지금 곡에서 이 인물의 대표 역할 (예: 작곡) */
   role: string;
+  includePerformer?: boolean;
 }
 
 export interface Recommendation {
@@ -62,21 +65,60 @@ const ROLE_NOUN: Record<string, string> = {
   "작사·작곡": "작사·작곡가",
   편곡: "편곡가",
   프로듀서: "프로듀서",
+  노래: "가수",
 };
 
 export function roleNoun(role: string): string {
   return ROLE_NOUN[role] ?? "참여자";
 }
 
-/** 추천에 쓸 인물: 핵심 역할(작곡·작사·편곡·프로듀서) 참여자 우선, 최대 4명 */
-export function pickPeople(credits: PersonCredit[]): Via[] {
+/**
+ * 추천에 쓸 인물:
+ * 1) 핵심 역할(작곡·작사·편곡·프로듀서) 참여자 우선
+ * 2) 핵심 역할이 부족하면 나머지 크레딧 참여자도 포함
+ * 3) 크레딧 미기록·일부 표기 곡도 추천할 수 있도록 가수(artists, 역할 "노래")를 함께 포함
+ */
+export function pickPeople(credits: PersonCredit[], artists: ArtistLite[] = []): Via[] {
+  const seen = new Set<string>();
+  const out: Via[] = [];
   const core = credits.filter((c) => c.roles.some(isCoreRole));
-  const pool = core.length ? core : credits;
-  return pool.slice(0, MAX_PEOPLE).map((c) => ({
-    personId: c.artist.id,
-    name: c.artist.name,
-    role: c.roles.find(isCoreRole) ?? c.roles[0],
-  }));
+  const nonCore = credits.filter((c) => !c.roles.some(isCoreRole));
+
+  for (const c of [...core, ...nonCore]) {
+    if (out.length >= MAX_PEOPLE) break;
+    if (seen.has(c.artist.id)) continue;
+    seen.add(c.artist.id);
+    out.push({
+      personId: c.artist.id,
+      name: c.artist.name,
+      disambiguation: c.artist.disambiguation,
+      role: c.roles.find(isCoreRole) ?? c.roles[0],
+    });
+  }
+
+  for (const a of artists) {
+    if (!a.id) continue;
+    const existing = out.find((p) => p.personId === a.id);
+    if (existing) {
+      existing.includePerformer = true;
+      continue;
+    }
+    if (out.length >= MAX_PEOPLE && core.length >= 2 && out.some((p) => p.includePerformer)) break;
+    if (out.length >= MAX_PEOPLE && core.length >= 2) {
+      out.pop();
+    }
+    if (out.length >= MAX_PEOPLE) break;
+    seen.add(a.id);
+    out.push({
+      personId: a.id,
+      name: a.name,
+      disambiguation: a.disambiguation,
+      role: "노래",
+      includePerformer: true,
+    });
+  }
+
+  return out;
 }
 
 /** 목록 전체에서 고르게 n개 (가나다순 앞쪽에만 몰리지 않도록) */
@@ -149,7 +191,7 @@ export class RecCollector {
     private onUpdate: (p: RecProgress) => void,
     private signal: AbortSignal,
   ) {
-    this.people = pickPeople(d.credits).map((via) => ({ via, exhausted: false }));
+    this.people = pickPeople(d.credits, d.artists).map((via) => ({ via, exhausted: false }));
     this.seen = new Set([normalizeTitle(d.title)]);
     this.opts = { low: true, signal };
     this.exhausted = this.people.length === 0;
@@ -196,7 +238,12 @@ export class RecCollector {
     if (!p.queue) {
       try {
         p.queue = candidateQueue(
-          (await getArtistCredits(p.via.personId, this.opts)).items,
+          (
+            await getArtistCredits(p.via.personId, {
+              ...this.opts,
+              includePerformer: p.via.includePerformer || p.via.role === "노래",
+            })
+          ).items,
           p.via,
           normalizeTitle(this.d.title),
         );
@@ -282,16 +329,24 @@ export class RecCollector {
   }
 }
 
-/** 근거 문구: "같은 작곡가 Kenzie · 소리 유사도 0.92 · 둘 다 에너지 높음" */
+/** 근거 문구: "같은 작곡가 Kenzie · 소리 유사도 0.92 · 둘 다 에너지 높음" (동명이인은 MBID 기준으로 구분) */
 export function reasonText(r: Recommendation): string[] {
   const parts: string[] = [];
-  // 역할별로 이름 묶기
-  const byRole = new Map<string, string[]>();
+  const nameCounts = new Map<string, number>();
+  for (const v of r.via) {
+    nameCounts.set(v.name, (nameCounts.get(v.name) ?? 0) + 1);
+  }
+  // 역할별로 고유 인물(personId) 묶기
+  const byRole = new Map<string, Map<string, string>>();
   for (const v of r.via) {
     const k = roleNoun(v.role);
-    byRole.set(k, [...(byRole.get(k) ?? []), v.name]);
+    const byId = byRole.get(k) ?? new Map<string, string>();
+    const label =
+      (nameCounts.get(v.name) ?? 0) > 1 && v.disambiguation ? `${v.name} (${v.disambiguation})` : v.name;
+    byId.set(v.personId, label);
+    byRole.set(k, byId);
   }
-  for (const [noun, names] of byRole) parts.push(`같은 ${noun} ${names.join("·")}`);
+  for (const [noun, byId] of byRole) parts.push(`같은 ${noun} ${[...byId.values()].join("·")}`);
   if (r.similarity != null) parts.push(`소리 유사도 ${r.similarity.toFixed(2)}`);
   if (r.traits?.length) parts.push(r.traits[0]);
   return parts;

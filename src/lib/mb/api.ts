@@ -34,7 +34,11 @@ export function creditText(ac: MbArtistCredit[] | undefined): string {
 }
 
 function creditArtists(ac: MbArtistCredit[] | undefined): ArtistLite[] {
-  return (ac ?? []).map((c) => ({ id: c.artist.id, name: c.artist.name }));
+  return (ac ?? []).map((c) => ({
+    id: c.artist.id,
+    name: c.artist.name,
+    disambiguation: c.artist.disambiguation,
+  }));
 }
 
 /** 제목 비교용 정규화: 괄호 안 버전 표기·문장부호·공백 제거, 소문자 */
@@ -391,6 +395,7 @@ export interface RecordingDetail {
   length: number | null;
   firstReleaseDate: string;
   releaseTitle: string;
+  releaseGroupId?: string;
   isrcs: string[];
   works: Array<{ id: string; title: string }>;
   credits: PersonCredit[];
@@ -451,6 +456,36 @@ export async function getRecording(mbid: string): Promise<RecordingDetail> {
   }
   collectCredits(rels, people);
 
+  const artists = creditArtists(r["artist-credit"]);
+
+  // 이 녹음에 핵심 제작 크레딧이 전혀 없으면, 같은 가수·같은 제목의 다른 녹음(예: 원곡/다른 발매본)에 연결된 작품·크레딧을 찾아 보충한다
+  if (![...people.values()].some((c) => c.roles.some(isCoreRole)) && artists[0]?.id) {
+    try {
+      const want = normalizeTitle(r.title);
+      const hits = await runQuery(`arid:${artists[0].id} AND recording:${quote(r.title)}`, 10);
+      const sib = hits
+        .filter((h) => h.id !== r.id && !h.video && normalizeTitle(h.title) === want)
+        .sort(representativeOrder)[0];
+      if (sib) {
+        const sr = await mbGet<MbRecordingLookup>(`recording/${sib.id}`, {
+          inc: "artist-rels+work-rels+work-level-rels",
+        });
+        const srels = sr.relations ?? [];
+        for (const rel of srels) {
+          if (rel["target-type"] === "work" && rel.work) {
+            if (!works.some((w) => w.id === rel.work!.id)) {
+              works.push({ id: rel.work.id, title: rel.work.title });
+            }
+            collectCredits(rel.work.relations ?? [], people);
+          }
+        }
+        collectCredits(srels, people);
+      }
+    } catch {
+      /* 형제 녹음 조회가 실패하면 현재 녹음 정보만 사용한다 */
+    }
+  }
+
   const youtube = rels
     .filter((x) => x["target-type"] === "url" && x.url && isYoutubeUrl(x.url.resource))
     .map((x) => x.url!.resource);
@@ -463,11 +498,12 @@ export async function getRecording(mbid: string): Promise<RecordingDetail> {
     id: r.id,
     title: r.title,
     artist: creditText(r["artist-credit"]),
-    artists: creditArtists(r["artist-credit"]),
+    artists,
     disambiguation: r.disambiguation ?? "",
     length: r.length,
     firstReleaseDate: r["first-release-date"] ?? releases[0]?.date ?? "",
     releaseTitle: releases[0]?.title ?? "",
+    releaseGroupId: derived.get<BatchRecording>(`rec:${r.id}`)?.releaseGroupId ?? pickReleaseGroup(r.releases ?? []),
     isrcs: r.isrcs ?? [],
     works,
     credits: sortCredits([...people.values()]),
@@ -489,24 +525,31 @@ export interface PersonItem {
 export interface PersonDetail {
   artist: ArtistLite & { type: string | null; country: string | null };
   items: PersonItem[];
+  /** 가수(arid) 녹음까지 함께 조회했는지 */
+  hasPerformerRecordings?: boolean;
 }
 
-export async function getArtistCredits(mbid: string, opts?: RunOptions): Promise<PersonDetail> {
-  const ck = `artist:v2:${mbid}`; // v2: 반주 제외·원곡 대표 규칙 변경
+export async function getArtistCredits(
+  mbid: string,
+  opts?: RunOptions & { includePerformer?: boolean },
+): Promise<PersonDetail> {
+  const ck = `artist:v3:${mbid}`; // v3: 반주 제외·원곡 대표·가창 녹음(arid) 보충
   const hit = derived.get<PersonDetail>(ck);
-  if (hit) return hit;
+  if (hit && (!opts?.includePerformer || hit.hasPerformerRecordings)) return hit;
   const detail = await fetchArtistCredits(mbid, opts);
   derived.set(ck, detail);
   return detail;
 }
 
-async function fetchArtistCredits(mbid: string, opts?: RunOptions): Promise<PersonDetail> {
+async function fetchArtistCredits(
+  mbid: string,
+  opts?: RunOptions & { includePerformer?: boolean },
+): Promise<PersonDetail> {
   const a = await mbGet<MbArtistLookup>(`artist/${mbid}`, { inc: "work-rels+recording-rels" }, opts);
   const byTitle = new Map<string, PersonItem>();
 
   /** 같은 제목은 한 줄: 작품(원곡 대표를 따로 고름) 또는 버전 표기 없는 녹음을 대표로 */
-  const add = (kind: PersonItem["kind"], id: string, title: string, dis: string, rel: MbRelation) => {
-    const label = roleLabel(rel);
+  const add = (kind: PersonItem["kind"], id: string, title: string, dis: string, label: string) => {
     const key = normalizeTitle(title) || id;
     const cur = byTitle.get(key);
     const isVersion = kind === "recording" && isVersionRecording(title, dis);
@@ -530,11 +573,47 @@ async function fetchArtistCredits(mbid: string, opts?: RunOptions): Promise<Pers
 
   for (const rel of a.relations ?? []) {
     if (rel["target-type"] === "work" && rel.work) {
-      add("work", rel.work.id, rel.work.title, rel.work.disambiguation ?? "", rel);
+      add("work", rel.work.id, rel.work.title, rel.work.disambiguation ?? "", roleLabel(rel));
     } else if (rel["target-type"] === "recording" && rel.recording && !rel.recording.video) {
       const dis = rel.recording.disambiguation ?? "";
       if (isBackingTrack(rel.recording.title, dis)) continue; // 반주 버전은 목록에서 뺀다
-      add("recording", rel.recording.id, rel.recording.title, dis, rel);
+      add("recording", rel.recording.id, rel.recording.title, dis, roleLabel(rel));
+    }
+  }
+
+  // 제작 크레딧(work-rels/recording-rels)이 기록되지 않은 노래도 추천 후보로 띄울 수 있도록,
+  // 가수·그룹이거나 연결된 제작 크레딧 곡이 적은 인물(<24곡)은 가창 녹음(arid:<mbid>)을 함께 모은다
+  const needPerformer = !!opts?.includePerformer || a.type === "Group" || byTitle.size < 24;
+  if (needPerformer) {
+    try {
+      const res = await mbGet<MbSearchResponse>(
+        "recording",
+        { query: `arid:${mbid}`, limit: "50" },
+        opts,
+      );
+      const hits = (res.recordings ?? [])
+        .filter((r) => !r.video && !isBackingTrack(r.title, r.disambiguation ?? ""))
+        .map((r) => ({ r, h: toHit(r) }))
+        .sort((x, y) => representativeOrder(x.h, y.h));
+      for (const { r } of hits) {
+        const rec: BatchRecording = {
+          id: r.id,
+          title: r.title,
+          artist: creditText(r["artist-credit"]),
+          artistIds: (r["artist-credit"] ?? []).map((c) => c.artist.id),
+          disambiguation: r.disambiguation ?? "",
+          length: r.length ?? null,
+          firstReleaseDate: r["first-release-date"] ?? "",
+          isrcs: r.isrcs ?? [],
+          video: !!r.video,
+          releaseGroupId: pickReleaseGroup(r.releases ?? []),
+        };
+        derived.set(`rec:${r.id}`, rec);
+        add("recording", r.id, r.title, r.disambiguation ?? "", "노래");
+      }
+    } catch (e) {
+      if (opts?.signal?.aborted) throw e;
+      /* 가창 녹음 보충 실패 시 기존 크레딧만 사용 */
     }
   }
 
@@ -555,6 +634,7 @@ async function fetchArtistCredits(mbid: string, opts?: RunOptions): Promise<Pers
       country: a.country,
     },
     items,
+    hasPerformerRecordings: needPerformer,
   };
 }
 
