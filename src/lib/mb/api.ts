@@ -1,9 +1,11 @@
 import { TwoLevelCache, type RunOptions } from "../cache";
 import { isBackingTrack, isVersionRecording } from "../filters";
+import { deezerSearchTop } from "../preview";
 import { mbGet } from "./client";
 import type {
   MbArtistCredit,
   MbArtistLookup,
+  MbArtistSearchResponse,
   MbRecordingBrowse,
   MbRecordingLookup,
   MbRelation,
@@ -103,6 +105,12 @@ export interface SearchHit {
   releaseCount: number;
   video: boolean;
   score: number;
+  /** artist-credit의 가수 MBID (곡 묶기용) */
+  artistIds: string[];
+  /** 가장 이른 Official·비컴필레이션 발매일 (없으면 "") */
+  originalDate: string;
+  /** 컴필레이션에만 실린 녹음 */
+  compilationOnly: boolean;
 }
 
 const LUCENE_SPECIAL = /[+\-&|!(){}[\]^"~*?:\\/]/g;
@@ -118,11 +126,30 @@ function toHit(r: MbSearchRecording): SearchHit {
     artistNames: ac.flatMap((c) => [c.name, c.artist.name]),
     disambiguation: r.disambiguation ?? "",
     firstReleaseDate: r["first-release-date"] ?? "",
-    releaseTitle: r.releases?.[0]?.title ?? "",
+    releaseTitle: originalRelease(r.releases ?? [])?.title ?? r.releases?.[0]?.title ?? "",
     hasIsrc: (r.isrcs?.length ?? 0) > 0,
     releaseCount: r.releases?.length ?? 0,
     video: !!r.video,
     score: r.score,
+    artistIds: ac.map((c) => c.artist.id),
+    ...originalInfo(r.releases ?? []),
+  };
+}
+
+const isCompilation = (rel: MbReleaseRef) => !!rel["release-group"]?.["secondary-types"]?.includes("Compilation");
+
+/** 가장 이른 Official·비컴필레이션 발매 */
+function originalRelease(releases: MbReleaseRef[]): MbReleaseRef | undefined {
+  return releases
+    .filter((x) => x.status === "Official" && !isCompilation(x) && x.date)
+    .sort((a, b) => (a.date ?? "").localeCompare(b.date ?? ""))[0];
+}
+
+/** 원곡 판별용: 가장 이른 Official·비컴필레이션 발매일, 컴필레이션에만 실렸는지 */
+function originalInfo(releases: MbReleaseRef[]): { originalDate: string; compilationOnly: boolean } {
+  return {
+    originalDate: originalRelease(releases)?.date ?? "",
+    compilationOnly: releases.length > 0 && releases.every(isCompilation),
   };
 }
 
@@ -205,14 +232,38 @@ function relevance(h: SearchHit, q: string, splits: Array<[string, string]>): nu
   return s;
 }
 
+/** 같은 곡(정규화 제목 + 첫 가수)의 대표: 버전·반주 아님 → 컴필레이션 아님 → 가장 이른 Official 발매 → 발매 수 */
+function representativeOrder(a: SearchHit, b: SearchHit): number {
+  const ver = (h: SearchHit) =>
+    Number(isBackingTrack(h.title, h.disambiguation)) * 2 + Number(isVersionRecording(h.title, h.disambiguation));
+  return (
+    ver(a) - ver(b) ||
+    Number(a.video) - Number(b.video) ||
+    Number(a.compilationOnly) - Number(b.compilationOnly) ||
+    Number(!a.originalDate) - Number(!b.originalDate) ||
+    a.originalDate.localeCompare(b.originalDate) ||
+    b.releaseCount - a.releaseCount
+  );
+}
+
+/** 점수순 정렬 후 곡당 한 줄로 묶는다. 줄 순서는 묶음 안 최고 점수, 대표는 원곡 */
 function rerank(hits: SearchHit[], q: string, splits: Array<[string, string]>): SearchHit[] {
   const seen = new Set<string>();
-  return hits
+  const scored = hits
     .filter((h) => !seen.has(h.id) && seen.add(h.id))
     .filter((h) => matchCount(q, h) > 0) // 질의 단어가 제목·가수 어디에도 없으면 제외
     .map((h) => ({ h, r: relevance(h, q, splits) }))
-    .sort((a, b) => b.r - a.r || b.h.score - a.h.score)
-    .map((x) => x.h)
+    .sort((a, b) => b.r - a.r || b.h.score - a.h.score);
+  const groups = new Map<string, { best: number; members: SearchHit[] }>();
+  for (const { h, r } of scored) {
+    const key = `${normalizeTitle(h.title) || h.id}|${h.artistIds[0] ?? normalizeLoose(h.artist)}`;
+    const g = groups.get(key);
+    if (g) g.members.push(h);
+    else groups.set(key, { best: r, members: [h] });
+  }
+  return [...groups.values()]
+    .sort((a, b) => b.best - a.best)
+    .map((g) => [...g.members].sort(representativeOrder)[0])
     .slice(0, 15);
 }
 
@@ -221,12 +272,43 @@ async function runQuery(query: string, limit = 100): Promise<SearchHit[]> {
   return (res.recordings ?? []).map(toHit);
 }
 
+/** 질의의 가수 부분 단어가 모두 결과의 가수 이름에 있는지 */
+function artistMatches(a: string, h: SearchHit): boolean {
+  const ws = new Set([...h.artistNames.flatMap(words), ...words(h.artist)]);
+  const joined = new Set([normalizeLoose(h.artist), ...h.artistNames.map(normalizeLoose)]);
+  const ts = tokens(a);
+  return ts.length > 0 && (joined.has(normalizeLoose(a)) || ts.every((t) => ws.has(t)));
+}
+
+/**
+ * 질의의 가수 부분을 MusicBrainz 가수로 확정한다 (이름·별칭 일치, 예: 아이유 → IU).
+ * 나누는 경우마다의 가수 후보를 OR로 묶어 한 번에 검색. 일치하는 (제목, 가수MBID) 쌍을 점수순으로 돌려준다.
+ */
+async function resolveArtists(
+  splits: Array<[string, string]>,
+): Promise<Array<{ title: string; artistId: string; names: string[] }>> {
+  const parts = [...new Set(splits.map(([, a]) => a))];
+  const query = parts.map((a) => `artist:${quote(a)} OR alias:${quote(a)}`).join(" OR ");
+  const res = await mbGet<MbArtistSearchResponse>("artist", { query, limit: "15" });
+  const out: Array<{ title: string; artistId: string; names: string[]; score: number }> = [];
+  for (const art of res.artists ?? []) {
+    if (art.score < 80) continue;
+    const names = [art.name, art["sort-name"], ...(art.aliases ?? []).map((x) => x.name)];
+    const norm = new Set(names.map(normalizeLoose));
+    for (const [t, a] of splits) {
+      if (norm.has(normalizeLoose(a))) out.push({ title: t, artistId: art.id, names, score: art.score });
+    }
+  }
+  return out.sort((x, y) => y.score - x.score).slice(0, 2);
+}
+
 /**
  * 녹음 검색.
- * 1) 질의를 (제목, 가수)로 나눌 수 있으면 나누는 모든 경우를 OR로 묶어
- *    (recording:"제목" AND artist:"가수") 한 번에 요청
- * 2) 결과가 없을 때만 일반 검색
- * 결과는 가수 일치·버전 표기·ISRC로 다시 정렬하고, 질의 단어가 하나도 없는 결과는 뺀다.
+ * 1) 가수 검색으로 가수 MBID를 확정(별칭 포함) → arid:{MBID} AND recording:"{제목}"
+ *    결과에 제목이 맞는 곡이 없으면 실패로 본다
+ * 2) 실패하면 (제목, 가수)로 나누는 모든 경우를 OR로 묶은 recording AND artist 검색
+ * 3) 그래도 없으면 일반 검색
+ * 결과는 점수순으로 곡당 한 줄로 묶고, 원곡(가장 이른 Official 발매, 컴필레이션 감점)을 대표로 쓴다.
  */
 export async function searchRecordings(q: string): Promise<SearchHit[]> {
   const query = q.trim().replace(/\s+/g, " ");
@@ -234,6 +316,27 @@ export async function searchRecordings(q: string): Promise<SearchHit[]> {
   const splits = splitCandidates(query);
 
   if (splits.length) {
+    let pairs: Awaited<ReturnType<typeof resolveArtists>> = [];
+    try {
+      pairs = await resolveArtists(splits);
+    } catch {
+      pairs = [];
+    }
+    for (const pr of pairs) {
+      let hits: SearchHit[] = [];
+      try {
+        hits = await runQuery(`arid:${pr.artistId} AND recording:${quote(pr.title)}`);
+      } catch {
+        hits = [];
+      }
+      const want = normalizeTitle(pr.title);
+      if (!hits.some((h) => normalizeTitle(h.title) === want)) continue;
+      // 별칭(예: 아이유)도 가수 일치로 본다
+      for (const h of hits) h.artistNames.push(...pr.names);
+      const ranked = rerank(hits, query, splits);
+      if (ranked.length) return ranked;
+    }
+
     const fielded = splits.map(([t, a]) => `(recording:${quote(t)} AND artist:${quote(a)})`).join(" OR ");
     let hits: SearchHit[] = [];
     try {
@@ -241,11 +344,34 @@ export async function searchRecordings(q: string): Promise<SearchHit[]> {
     } catch {
       hits = [];
     }
-    const ranked = rerank(hits, query, splits);
+    // 제목이 맞고 가수도 맞는 결과만 (예: "Get Lucky" → recording:"Get" AND artist:"Lucky" 같은 엉뚱한 결과 제외)
+    const plausible = hits.filter((h) =>
+      splits.some(([t, a]) => normalizeTitle(h.title) === normalizeTitle(t) && artistMatches(a, h)),
+    );
+    const ranked = rerank(plausible, query, splits);
     if (ranked.length) return ranked;
   }
 
   const plain = query.replace(/\s+[-–/|]\s+/, " ");
+
+  // 가수를 못 정했으면(예: "Get Lucky") Deezer 인기순 검색으로 가수를 추정해 제목+가수로 다시 찾는다
+  const guess = (await deezerSearchTop(plain)).find((x) => {
+    const t = normalizeTitle(x.title);
+    return t.length > 0 && normalizeLoose(plain).includes(t);
+  });
+  if (guess) {
+    let hits: SearchHit[] = [];
+    try {
+      hits = await runQuery(`recording:${quote(guess.title)} AND artist:${quote(guess.artist)}`);
+    } catch {
+      hits = [];
+    }
+    const pair: Array<[string, string]> = [[guess.title, guess.artist]];
+    const ok = hits.filter((h) => normalizeTitle(h.title) === normalizeTitle(guess.title) && artistMatches(guess.artist, h));
+    const ranked = rerank(ok, `${guess.title} ${guess.artist}`, pair);
+    if (ranked.length) return ranked;
+  }
+
   return rerank(await runQuery(esc(plain)), plain, splits);
 }
 

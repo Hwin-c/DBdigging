@@ -130,6 +130,25 @@ export async function findPreview(opts: {
   }
 }
 
+interface DeezerSearch {
+  data?: Array<{ title_short?: string; title?: string; artist?: { name?: string }; rank?: number }>;
+}
+
+/**
+ * Deezer 검색(인기순)으로 질의에 맞는 곡의 (제목, 가수) 후보를 얻는다. 가수 없이 제목만 넣은 검색 보조용.
+ * 2026-11-19 응답 확인: data[].title_short, data[].artist.name, data[].rank
+ */
+export async function deezerSearchTop(q: string, n = 3): Promise<Array<{ title: string; artist: string }>> {
+  try {
+    const r = await jsonp<DeezerSearch>(`https://api.deezer.com/search?q=${encodeURIComponent(q)}&limit=${n}`);
+    return (r.data ?? [])
+      .filter((x) => x.artist?.name && (x.title_short || x.title))
+      .map((x) => ({ title: (x.title_short || x.title)!, artist: x.artist!.name! }));
+  } catch {
+    return [];
+  }
+}
+
 /** 앨범 커버만 필요할 때: Deezer(ISRC)만 본다 (iTunes 호출 한도를 아끼기 위해) */
 export async function findCover(isrc: string): Promise<string | null> {
   try {
