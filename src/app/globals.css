@@ -3,8 +3,8 @@
 @tailwind utilities;
 
 :root {
-  --background: #0b0f17;
-  --foreground: #f8fafc;
+  --background: #ffffff;
+  --foreground: #000000;
 }
 
 body {
@@ -21,12 +21,90 @@ body {
   height: 6px;
 }
 ::-webkit-scrollbar-track {
-  background: #0f172a;
+  background: transparent;
 }
 ::-webkit-scrollbar-thumb {
-  background: #334155;
+  background: #d4d4d4;
   border-radius: 3px;
 }
-::-webkit-scrollbar-thumb:hover {
-  background: #475569;
+
+/* ───────── 스와이프 디깅: LP ───────── */
+
+/* 레코드 홈: 가는 동심원 */
+.vinyl {
+  background:
+    radial-gradient(circle at 50% 50%, transparent 31%, rgba(255, 255, 255, 0.07) 31.4%, transparent 32%),
+    repeating-radial-gradient(circle at 50% 50%, #050505 0 1.2px, #1c1c1c 1.6px 2.2px),
+    #000;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.9);
+}
+.vinyl-spin.is-spinning {
+  animation: vinyl-spin 1.8s linear infinite;
+}
+@keyframes vinyl-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* 슬리브: 종이 가장자리처럼 얇은 선과 낮은 그림자 */
+.sleeve {
+  box-shadow:
+    0 0 0 1px rgba(0, 0, 0, 0.06),
+    0 18px 36px -22px rgba(0, 0, 0, 0.45);
+}
+
+/* 시작 화면 커버가 천천히 떠다닌다 */
+.float-cover {
+  animation: float-cover var(--float-dur, 9s) ease-in-out var(--float-delay, 0s) infinite alternate;
+}
+@keyframes float-cover {
+  from {
+    transform: translate3d(0, 0, 0) rotate(var(--float-rot, 0deg));
+  }
+  to {
+    transform: translate3d(0, -10px, 0) rotate(calc(var(--float-rot, 0deg) * -1));
+  }
+}
+
+/* 넘긴 카드가 화면 밖으로 */
+.card-exit-left {
+  animation: exit-left 240ms ease-in forwards;
+}
+.card-exit-right {
+  animation: exit-right 240ms ease-in forwards;
+}
+.card-exit-up {
+  animation: exit-up 240ms ease-in forwards;
+}
+@keyframes exit-left {
+  to {
+    transform: translate3d(-120%, 20px, 0) rotate(-12deg);
+    opacity: 0;
+  }
+}
+@keyframes exit-right {
+  to {
+    transform: translate3d(120%, 20px, 0) rotate(12deg);
+    opacity: 0;
+  }
+}
+@keyframes exit-up {
+  to {
+    transform: translate3d(0, -110%, 0);
+    opacity: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .vinyl-spin.is-spinning,
+  .float-cover {
+    animation: none;
+  }
+  .card-exit-left,
+  .card-exit-right,
+  .card-exit-up {
+    animation: none;
+    opacity: 0;
+  }
 }

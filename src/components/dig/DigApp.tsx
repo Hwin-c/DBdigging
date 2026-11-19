@@ -51,11 +51,11 @@ export function DigApp() {
 
   const go = useCallback(
     (next: { rec?: string | null; person?: string | null }, scrollTop = true) => {
-      const sp = new URLSearchParams();
+      const sp = new URLSearchParams({ view: "list" });
       if (next.rec) sp.set("rec", next.rec);
       if (next.person) sp.set("person", next.person);
       const qs = sp.toString();
-      router.push(qs ? `/?${qs}` : "/", { scroll: false });
+      router.push(`/?${qs}`, { scroll: false });
       if (scrollTop) window.scrollTo({ top: 0, behavior: "smooth" });
     },
     [router],
@@ -126,7 +126,7 @@ export function DigApp() {
 
   return (
     <main className="mx-auto w-full max-w-xl px-4 pt-5">
-      <header className="mb-4">
+      <header className="mb-4 flex items-center justify-between gap-2">
         <button
           type="button"
           onClick={() => {
@@ -137,6 +137,16 @@ export function DigApp() {
         >
           <span className="text-lg font-bold tracking-tight text-white">디비디깅</span>
           <span className="ml-2 text-xs text-slate-500">크레딧과 소리로 음악 디깅</span>
+        </button>
+        <button
+          type="button"
+          onClick={() => {
+            player.stop();
+            router.push(rec ? `/?dig=${rec}` : "/");
+          }}
+          className="hidden min-h-[44px] items-center rounded-full border border-slate-700 px-4 text-sm text-slate-300 hover:border-slate-400 md:inline-flex"
+        >
+          카드로 보기
         </button>
       </header>
 
