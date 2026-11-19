@@ -22,6 +22,8 @@ export const DECK = {
   QUEUE_MIN: 3,
   /** 대기열 뒤에 다양성 선택용으로 더 모아 둘 후보 수 */
   POOL_EXTRA: 3,
+  /** 다양성 규칙 때문에 대기 중인 후보를 최대 몇 개까지 쌓을지 */
+  POOL_MAX: 12,
   /** 미리듣기 주소를 미리 받아 둘 앞쪽 카드 수 (모바일에서 스와이프 중 바로 재생하기 위함) */
   PREFETCH: 2,
   /** 시작 곡 크레딧에서 쓸 최대 인물 수 */
@@ -406,8 +408,14 @@ export class Deck {
     void this.collect();
   }
 
+  /**
+   * 더 모아야 하는지: 같은 가수 규칙 때문에 지금 못 쓰는 후보는 세지 않는다
+   * (한 가수 곡만 쌓여 대기열이 멈추는 것 방지). 후보는 POOL_MAX까지만 쌓는다.
+   */
   private needMore(): boolean {
-    return this.queue.length + this.pool.length < DECK.QUEUE_MIN + DECK.POOL_EXTRA;
+    if (this.pool.length >= DECK.POOL_MAX) return false;
+    const usable = this.pool.filter((c) => this.artistOk(c)).length;
+    return this.queue.length + usable < DECK.QUEUE_MIN + DECK.POOL_EXTRA;
   }
 
   /** 대기열이 부족하면 한 번에 인물별 ROUND_PER_PERSON곡씩 모은다 */
@@ -645,7 +653,9 @@ export class Deck {
         if (chosen) this.pickPtr = (this.pickPtr + k + 1) % this.people.length;
       }
       if (!chosen) chosen = this.pool.find((c) => this.artistOk(c));
-      if (!chosen && (relax || this.exhausted)) chosen = this.pool[0];
+      // 보여 줄 카드가 하나도 없거나 후보가 가득 찼으면 같은 가수 규칙을 푼다 (멈춤 방지)
+      if (!chosen && (relax || this.exhausted || this.queue.length === 0 || this.pool.length >= DECK.POOL_MAX))
+        chosen = this.pool[0];
       if (!chosen) break; // 같은 가수 규칙 때문에 기다린다
       // 아직 크레딧을 안 읽은 인물이 남아 있으면 같은 인물 연속 카드는 기다린다 (첫 카드는 바로)
       const othersPending = this.people.some((p) => !p.queue && !p.exhausted);
