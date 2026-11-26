@@ -35,3 +35,6 @@ yarn-error.log*
 *.pem
 .vscode/
 .idea/
+
+# 정적 크레딧 색인 (scripts/build_index.py 출력, 용량이 커서 커밋하지 않음)
+/public/idx/
