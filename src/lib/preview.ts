@@ -55,14 +55,15 @@ function jsonp<T>(url: string, timeoutMs = 8000): Promise<T> {
   });
 }
 
-async function fromDeezer(isrc: string): Promise<PreviewResult | null> {
+/** Deezer ISRC 조회. 2026-11-27 확인: 곡은 있는데 preview가 ""인 경우가 있다(밤편지 KRA381700611: readable false). 그때도 커버는 쓸 수 있다 */
+async function fromDeezerFull(isrc: string): Promise<{ preview: PreviewResult | null; cover?: string }> {
   const t = await jsonp<DeezerTrack>(`https://api.deezer.com/track/isrc:${encodeURIComponent(isrc)}`);
-  if (t.error || !t.preview) return null;
+  if (t.error) return { preview: null };
+  const cover = t.album?.cover_big ?? t.album?.cover_medium;
+  if (!t.preview) return { preview: null, cover };
   return {
-    source: "deezer",
-    url: t.preview,
-    link: t.link ?? `https://www.deezer.com/track/${t.id}`,
-    cover: t.album?.cover_big ?? t.album?.cover_medium,
+    preview: { source: "deezer", url: t.preview, link: t.link ?? `https://www.deezer.com/track/${t.id}`, cover },
+    cover,
   };
 }
 
@@ -71,6 +72,7 @@ interface ItunesResult {
   artistName?: string;
   previewUrl?: string;
   trackViewUrl?: string;
+  artworkUrl100?: string;
 }
 
 async function itunesSearch(term: string, country: string): Promise<ItunesResult[]> {
@@ -97,6 +99,12 @@ function itunesScore(r: ItunesResult, title: string, artist: string): number {
   return s;
 }
 
+/** iTunes artwork는 100px 주소의 크기 표기를 바꿔 600px로 받는다 */
+function itunesCover(url?: string): string | undefined {
+  return url ? url.replace(/\/\d+x\d+bb\.(jpg|png)$/, "/600x600bb.$1") : undefined;
+}
+
+/** KR → US 순서. 제목이 맞고 미리듣기가 있는 결과 중 가수까지 맞는 것을 고른다 */
 async function fromItunes(title: string, artist: string): Promise<PreviewResult | null> {
   const term = `${title} ${artist}`.trim();
   for (const country of ["KR", "US"]) {
@@ -105,9 +113,116 @@ async function fromItunes(title: string, artist: string): Promise<PreviewResult 
       .map((r) => ({ r, s: itunesScore(r, title, artist) }))
       .filter((x) => x.s >= 0)
       .sort((a, b) => b.s - a.s)[0];
-    if (best) return { source: "itunes", url: best.r.previewUrl!, link: best.r.trackViewUrl ?? "" };
+    if (best)
+      return {
+        source: "itunes",
+        url: best.r.previewUrl!,
+        link: best.r.trackViewUrl ?? "",
+        cover: itunesCover(best.r.artworkUrl100),
+      };
   }
   return null;
+}
+
+interface DeezerSearchTrack {
+  id?: number;
+  title?: string;
+  title_short?: string;
+  preview?: string;
+  link?: string;
+  artist?: { name?: string };
+  album?: { cover_medium?: string; cover_big?: string };
+}
+
+/** Deezer 검색(JSONP). 제목·가수가 맞고 미리듣기가 있는 곡만. 가수·곡 지정 검색 → 일반 검색 순 */
+async function fromDeezerSearch(title: string, artist: string): Promise<PreviewResult | null> {
+  const want = normalizeTitle(title);
+  const a = loose(artist);
+  const queries = [`artist:"${artist}" track:"${title}"`, `${title} ${artist}`];
+  for (const q of queries) {
+    const r = await jsonp<{ data?: DeezerSearchTrack[] }>(`https://api.deezer.com/search?q=${encodeURIComponent(q)}&limit=5`);
+    const hit = (r.data ?? []).find((x) => {
+      if (!x.preview) return false;
+      const got = normalizeTitle(x.title_short || x.title || "");
+      if (!got || got !== want) return false;
+      const ga = loose(x.artist?.name ?? "");
+      return !!ga && !!a && (ga.includes(a) || a.includes(ga));
+    });
+    if (hit)
+      return {
+        source: "deezer",
+        url: hit.preview!,
+        link: hit.link ?? `https://www.deezer.com/track/${hit.id}`,
+        cover: hit.album?.cover_big ?? hit.album?.cover_medium,
+      };
+  }
+  return null;
+}
+
+export interface MediaResult {
+  preview: PreviewResult | null;
+  /** 앨범 커버: 미리듣기가 없어도 Deezer 곡 정보나 iTunes 결과에서 얻으면 채운다 */
+  cover?: string;
+}
+
+/**
+ * 미리듣기·커버 찾기. 순서:
+ * 1) Deezer(ISRC)  2) iTunes(원제목, KR→US)  3) 영문 별칭으로 iTunes 재검색 (aliases를 주었을 때만, MusicBrainz 1회)
+ * 4) Deezer 검색(가수·곡 지정, JSONP; 원제목과 별칭)
+ * quick: 1)만 (대기열 뒤쪽 후보의 미리듣기 유무를 값싸게 확인할 때)
+ * 끝까지 없으면 preview null (커버는 얻은 것이 있으면 함께 돌려준다)
+ */
+export async function findMedia(opts: {
+  isrc?: string;
+  title: string;
+  artist: string;
+  quick?: boolean;
+  /** 영문 별칭 제목 (필요할 때만 불린다) */
+  aliases?: () => Promise<string[]>;
+}): Promise<MediaResult> {
+  let cover: string | undefined;
+  const done = (p: PreviewResult): MediaResult => ({ preview: p, cover: p.cover ?? cover });
+  if (opts.isrc) {
+    try {
+      const d = await fromDeezerFull(opts.isrc);
+      if (d.preview) return done(d.preview);
+      cover = d.cover;
+    } catch {
+      /* 다음 단계로 */
+    }
+  }
+  if (opts.quick) return { preview: null, cover };
+  try {
+    const it = await fromItunes(opts.title, opts.artist);
+    if (it) return done(it);
+  } catch {
+    /* 다음 단계로 */
+  }
+  let names: string[] = [];
+  if (opts.aliases) {
+    try {
+      names = (await opts.aliases()).filter((n) => normalizeTitle(n) && normalizeTitle(n) !== normalizeTitle(opts.title)).slice(0, 2);
+    } catch {
+      names = [];
+    }
+    for (const n of names) {
+      try {
+        const it = await fromItunes(n, opts.artist);
+        if (it) return done(it);
+      } catch {
+        /* 다음 별칭 */
+      }
+    }
+  }
+  for (const t of [opts.title, ...names]) {
+    try {
+      const dz = await fromDeezerSearch(t, opts.artist);
+      if (dz) return done(dz);
+    } catch {
+      /* 다음 후보 */
+    }
+  }
+  return { preview: null, cover };
 }
 
 export async function findPreview(opts: {
@@ -115,20 +230,9 @@ export async function findPreview(opts: {
   title: string;
   artist: string;
 }): Promise<PreviewResult | null> {
-  if (opts.isrc) {
-    try {
-      const d = await fromDeezer(opts.isrc);
-      if (d) return d;
-    } catch {
-      /* iTunes로 넘어간다 */
-    }
-  }
-  try {
-    return await fromItunes(opts.title, opts.artist);
-  } catch {
-    return null;
-  }
+  return (await findMedia(opts)).preview;
 }
+
 
 interface DeezerSearch {
   data?: Array<{ title_short?: string; title?: string; artist?: { name?: string }; rank?: number }>;
@@ -152,7 +256,7 @@ export async function deezerSearchTop(q: string, n = 3): Promise<Array<{ title: 
 /** 앨범 커버만 필요할 때: Deezer(ISRC)만 본다 (iTunes 호출 한도를 아끼기 위해) */
 export async function findCover(isrc: string): Promise<string | null> {
   try {
-    return (await fromDeezer(isrc))?.cover ?? null;
+    return (await fromDeezerFull(isrc)).cover ?? null;
   } catch {
     return null;
   }

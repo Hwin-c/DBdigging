@@ -827,3 +827,24 @@ function pickReleaseGroup(releases: MbReleaseRef[]): string | undefined {
     .sort((a, b) => b.s - a.s || a.d.localeCompare(b.d));
   return scored[0]?.id;
 }
+
+/* ───────────────────────── 영문 별칭 ───────────────────────── */
+
+interface MbAliasLookup {
+  aliases?: Array<{ name: string; locale?: string | null; primary?: boolean | null; type?: string | null }>;
+}
+
+/**
+ * 미리듣기를 못 찾았을 때 영문 제목 별칭을 얻는다 (예: 밤편지 → Through the Night). MusicBrainz 1회.
+ * 작품 ID가 있으면 작품의 aliases, 없으면 녹음의 aliases. 라틴 문자로 된 이름만, 영어(en) 로케일 우선.
+ */
+export async function getEnglishAliases(
+  ids: { workId?: string; recordingId: string },
+  opts?: RunOptions,
+): Promise<string[]> {
+  const path = ids.workId ? `work/${ids.workId}` : `recording/${ids.recordingId}`;
+  const r = await mbGet<MbAliasLookup>(path, { inc: "aliases" }, opts);
+  const latin = (r.aliases ?? []).filter((a) => /[A-Za-z]/.test(a.name) && !/[^\u0000-\u024F\u2010-\u2027]/.test(a.name));
+  latin.sort((a, b) => Number(b.locale === "en") - Number(a.locale === "en") || Number(!!b.primary) - Number(!!a.primary));
+  return [...new Set(latin.map((a) => a.name))];
+}

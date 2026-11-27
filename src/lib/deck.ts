@@ -4,6 +4,7 @@ import { isBackingTrack } from "./filters";
 import {
   findIsrcFallback,
   getArtistCredits,
+  getEnglishAliases,
   getRecording,
   isCoreRole,
   lookupRecordings,
@@ -14,7 +15,7 @@ import {
   type PersonCredit,
   type PersonItem,
 } from "./mb/api";
-import { findPreview, type PreviewResult } from "./preview";
+import { findMedia, type MediaResult, type PreviewResult } from "./preview";
 import { getIdxPerson, getIdxWork, IDX_ROLES, isSpecialPurpose, type IdxRep } from "./idx";
 
 /* ───────────── 상수 ───────────── */
@@ -140,6 +141,10 @@ export interface DeckCard {
   contrast?: boolean;
   /** undefined: 아직 안 찾음, null: 미리듣기 없음 */
   preview?: PreviewResult | null;
+  /** 앨범 커버 주소 (Deezer·iTunes 조회에서 얻음, 미리듣기가 없어도 채워질 수 있음) */
+  cover?: string;
+  /** 이 곡이 속한 작품 ID (영문 별칭 조회용) */
+  workId?: string;
 }
 
 export interface DeckProgress {
@@ -601,6 +606,7 @@ export class Deck {
       })),
       isOrigin: true,
       features: o.features,
+      workId: o.workIds[0],
     };
     this.queue = [originCard];
     this.recentArtists = [originCard.primaryArtist];
@@ -982,9 +988,11 @@ export class Deck {
         releaseGroupId: r.releaseGroupId,
         via: [this.via(x.p, x.it)],
         features: r.isrcs[0] ? undefined : null,
+        workId: x.it.kind === "work" ? x.it.id : undefined,
       };
       this.pool.push(card);
       this.loadFeatures(card);
+      this.quickPreview(card);
     }
   }
 
@@ -1075,6 +1083,10 @@ export class Deck {
       return null;
     };
     return [...list].sort((a, b) => {
+      // 미리듣기가 확인된 카드를 앞에, 아직 모르는 카드는 가운데, 없는 카드는 뒤로 (빼지는 않는다)
+      const tier = (c: DeckCard) => (c.preview ? 0 : c.preview === undefined ? 1 : 2);
+      const ta = tier(a) - tier(b);
+      if (ta) return ta;
       const sa = scoreOf(a);
       const sb = scoreOf(b);
       if (sa == null && sb == null) return 0;
@@ -1139,19 +1151,42 @@ export class Deck {
   }
 
   /** 곡 하나의 미리듣기 조회. 같은 곡은 한 번만 받고, 결과는 대기열·후보의 같은 id 카드에 모두 넣는다 */
-  private fetchPreview(c: { id: string; isrc?: string; title: string; artist: string }): Promise<PreviewResult | null> {
+  private fetchPreview(c: { id: string; isrc?: string; title: string; artist: string; workId?: string }): Promise<PreviewResult | null> {
     let p = this.previews.get(c.id);
     if (!p) {
-      p = findPreview({ isrc: c.isrc, title: c.title, artist: c.artist })
-        .catch(() => null)
-        .then((r) => {
-          for (const x of [...this.queue, ...this.pool]) if (x.id === c.id) x.preview = r;
+      p = findMedia({
+        isrc: c.isrc,
+        title: c.title,
+        artist: c.artist,
+        // 영문 별칭은 앞쪽 카드에서 다른 방법이 모두 실패했을 때만 (MusicBrainz 1회, 캐시)
+        aliases: () => getEnglishAliases({ workId: c.workId, recordingId: c.id }, { low: true }),
+      })
+        .catch((): MediaResult => ({ preview: null }))
+        .then((m) => {
+          for (const x of [...this.queue, ...this.pool]) {
+            if (x.id !== c.id) continue;
+            x.preview = m.preview;
+            if (m.cover) x.cover = m.cover;
+          }
           this.emit();
-          return r;
+          return m.preview;
         });
       this.previews.set(c.id, p);
     }
     return p;
+  }
+
+  /** 대기열 뒤쪽 후보의 미리듣기 유무를 값싸게(Deezer ISRC 1회) 확인한다. 있으면 앞쪽에 오도록 정렬에 쓴다 */
+  private quickChecked = new Set<string>();
+  private quickPreview(card: DeckCard) {
+    if (!card.isrc || card.preview !== undefined || this.quickChecked.has(card.id)) return;
+    this.quickChecked.add(card.id);
+    void findMedia({ isrc: card.isrc, title: card.title, artist: card.artist, quick: true }).then((m) => {
+      if (m.cover && !card.cover) card.cover = m.cover;
+      if (m.preview && card.preview === undefined) card.preview = m.preview;
+      this.fillQueue();
+      this.emit();
+    });
   }
 
   /** 앞쪽 카드 미리듣기 주소를 미리 받아 둔다 */
@@ -1162,7 +1197,7 @@ export class Deck {
   }
 
   /** 재생 버튼·넘길 때 쓰는 미리듣기 조회 (미리 받는 중이면 그 결과를 기다린다) */
-  ensurePreview(card: { id: string; isrc?: string; title: string; artist: string }): Promise<PreviewResult | null> {
+  ensurePreview(card: { id: string; isrc?: string; title: string; artist: string; workId?: string }): Promise<PreviewResult | null> {
     return this.fetchPreview(card);
   }
 }

@@ -282,7 +282,7 @@ export function SwipeApp() {
                   <Cover
                     releaseGroupId={leaving.card.releaseGroupId}
                     isrc={leaving.card.isrc}
-                    fallback={leaving.card.preview?.cover}
+                    fallback={leaving.card.cover ?? leaving.card.preview?.cover}
                     title={leaving.card.title}
                     artist={leaving.card.artist}
                     size={500}

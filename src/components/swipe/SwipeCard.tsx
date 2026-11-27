@@ -36,7 +36,7 @@ function Sleeve({
             <Cover
               releaseGroupId={card.releaseGroupId}
               isrc={card.isrc}
-              fallback={card.preview?.cover}
+              fallback={card.cover ?? card.preview?.cover}
               title={card.title}
               artist={card.artist}
               className="h-full w-full"
@@ -49,7 +49,7 @@ function Sleeve({
       <Cover
         releaseGroupId={card.releaseGroupId}
         isrc={card.isrc}
-        fallback={card.preview?.cover}
+        fallback={card.cover ?? card.preview?.cover}
         title={card.title}
         artist={card.artist}
         size={500}
@@ -140,6 +140,8 @@ export function SwipeCard({
   const diffs = !card.isOrigin && base && card.features ? soundDiff(base, card.features) : [];
   const noPreview = card.preview === null;
   const yt = `https://www.youtube.com/results?search_query=${encodeURIComponent(`${card.title} ${card.artist}`)}`;
+  // Spotify는 API 없이 검색 주소만 연다 (개발 모드 제한, 키를 브라우저에 둘 수 없음)
+  const spotify = `https://open.spotify.com/search/${encodeURIComponent(`${card.title} ${card.artist}`)}`;
 
   return (
     <article
@@ -210,12 +212,25 @@ export function SwipeCard({
         )}
 
         {noPreview && (
-          <p className="mt-3 text-[13px] text-[#6E6E73]">
-            미리듣기 없음.{" "}
-            <a href={yt} target="_blank" rel="noreferrer" className="underline underline-offset-2 hover:text-black">
-              YouTube에서 듣기
-            </a>
-          </p>
+          <div className="mt-3">
+            <p className="text-[13px] text-[#6E6E73]">미리듣기 없음</p>
+            <div className="mt-2 flex flex-wrap gap-2">
+              {[
+                { href: yt, label: "YouTube에서 찾기" },
+                { href: spotify, label: "Spotify에서 찾기" },
+              ].map((l) => (
+                <a
+                  key={l.label}
+                  href={l.href}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="inline-flex min-h-[40px] items-center gap-1.5 rounded-full border border-[#D4D4D4] px-4 text-[13px] text-black hover:border-black"
+                >
+                  {l.label} <ExternalLink className="h-3 w-3" />
+                </a>
+              ))}
+            </div>
+          </div>
         )}
 
         <div className="mt-3 flex flex-wrap gap-x-4 gap-y-1 text-[13px] text-[#6E6E73]">
