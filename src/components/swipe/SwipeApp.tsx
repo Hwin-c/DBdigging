@@ -3,7 +3,7 @@ import clsx from "clsx";
 import { Bookmark, Loader2, X } from "lucide-react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Deck, SOUND_MODES, type DeckCard, type DeckSnapshot } from "@/lib/deck";
+import { Deck, SOUND_MODES, modeToast, type DeckCard, type DeckSnapshot } from "@/lib/deck";
 import { loadNote, saveNote, topPeople, type NoteItem } from "@/lib/note";
 import { player, type PlayerState } from "@/lib/preview";
 import { SourceFooter } from "../dig/SourceFooter";
@@ -27,6 +27,8 @@ const EMPTY: DeckSnapshot = {
 
 /** "+ 이름 합류" 알림 표시 시간 (ms) */
 const JOIN_TOAST_MS = 2600;
+/** 소리 방향을 바꾼 직후 알림 표시 시간 (ms) */
+const MODE_TOAST_MS = 3600;
 
 function usePlayer(): PlayerState {
   const [s, setS] = useState<PlayerState>(player.state);
@@ -51,6 +53,12 @@ export function SwipeApp() {
   const [note, setNote] = useState<NoteItem[]>([]);
   const [leaving, setLeaving] = useState<{ card: DeckCard; dir: SwipeDir; n: number } | null>(null);
   const [toast, setToast] = useState<{ text: string; n: number } | null>(null);
+  const toastTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const showToast = useCallback((text: string, ms: number) => {
+    clearTimeout(toastTimer.current);
+    setToast({ text, n: Date.now() });
+    toastTimer.current = setTimeout(() => setToast(null), ms);
+  }, []);
   /** 한 번이라도 재생했으면 넘길 때 다음 곡을 이어서 재생 */
   const soundOn = useRef(false);
   const ps = usePlayer();
@@ -259,7 +267,10 @@ export function SwipeApp() {
                   type="button"
                   role="radio"
                   aria-checked={snap.mode === m.id}
-                  onClick={() => deckRef.current?.setMode(m.id)}
+                  onClick={() => {
+                    const r = deckRef.current?.setMode(m.id);
+                    if (r) showToast(modeToast(m.id, r.baseTitle, r.n, r.pending), MODE_TOAST_MS);
+                  }}
                   className={clsx(
                     "min-h-[36px] flex-1 rounded-full px-2 text-[13px]",
                     snap.mode === m.id ? "bg-white font-semibold text-black shadow-[0_1px_2px_rgba(0,0,0,0.12)]" : "text-[#6E6E73] hover:text-black",
@@ -296,7 +307,7 @@ export function SwipeApp() {
               <div
                 key={toast.n}
                 role="status"
-                className="toast-in pointer-events-none absolute inset-x-0 top-2 z-20 mx-auto w-max max-w-[92%] truncate whitespace-nowrap rounded-full bg-black px-4 py-2 text-center text-[13px] font-semibold text-white md:text-[14px]"
+                className="toast-in pointer-events-none absolute inset-x-0 top-2 z-20 mx-auto w-max max-w-[92%] rounded-2xl bg-black px-4 py-2 text-center text-[13px] font-semibold leading-snug text-white md:text-[14px]"
               >
                 {toast.text}
               </div>
@@ -307,6 +318,8 @@ export function SwipeApp() {
                 key={card.id}
                 card={card}
                 base={origin?.features}
+                baseTitle={origin?.title}
+                mode={snap.mode}
                 status={ps.key === card.id ? ps.status : "idle"}
                 onSwipe={act}
                 onTap={toggle}

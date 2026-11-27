@@ -90,11 +90,51 @@ export const SOUND = {
 /** 소리 방향: 대기열 정렬 기준만 바꾼다 */
 export type SoundMode = "similar" | "energetic" | "calm" | "new";
 export const SOUND_MODES: Array<{ id: SoundMode; label: string }> = [
-  { id: "similar", label: "비슷하게" },
+  { id: "similar", label: "비슷한 분위기" },
   { id: "energetic", label: "더 신나게" },
   { id: "calm", label: "더 잔잔하게" },
-  { id: "new", label: "새롭게" },
+  { id: "new", label: "다른 분위기" },
 ];
+
+/** 방향 알림에서 '맞는 곡'으로 세는 에너지 차이 (이보다 작으면 방향이 느껴지지 않는다) */
+const MODE_MIN_ENERGY_DIFF = 0.05;
+
+/** 이 곡이 선택한 소리 방향에 맞는지 (알림의 곡 수 계산용) */
+export function modeMatch(mode: SoundMode, base: AudioFeatures, f: AudioFeatures): boolean {
+  switch (mode) {
+    case "energetic":
+      return f.energy - base.energy >= MODE_MIN_ENERGY_DIFF;
+    case "calm":
+      return base.energy - f.energy >= MODE_MIN_ENERGY_DIFF;
+    case "new":
+      return similarity(base, f) < SOUND.SIM_SIMILAR;
+    default:
+      return similarity(base, f) >= SOUND.SIM_SIMILAR;
+  }
+}
+
+/** 받침 있으면 "과", 없으면 "와" */
+function josaWaGwa(word: string): string {
+  const code = word.charCodeAt(word.length - 1) - 0xac00;
+  return code >= 0 && code < 11172 && code % 28 !== 0 ? "과" : "와";
+}
+
+/** 방향을 바꾼 직후 알림 문장. n: 지금 후보 중 맞는 곡 수, pending: 소리 정보를 아직 못 받은 후보 수 */
+export function modeToast(mode: SoundMode, baseTitle: string | null, n: number, pending: number): string {
+  const label = SOUND_MODES.find((m) => m.id === mode)?.label ?? "";
+  const head = `다음 곡부터 ${label}`;
+  if (!baseTitle) return `${head} · 시작 곡의 소리 정보가 없어 순서만 바꿔요`;
+  if (n === 0) return `${head} · 맞는 곡이 아직 없어요${pending > 0 ? ", 소리 정보를 받는 중" : ", 더 찾는 중"}`;
+  const what =
+    mode === "energetic"
+      ? `${baseTitle}보다 에너지 높은 곡`
+      : mode === "calm"
+        ? `${baseTitle}보다 에너지 낮은 곡`
+        : mode === "new"
+          ? `${baseTitle}${josaWaGwa(baseTitle)} 분위기가 다른 곡`
+          : `${baseTitle}${josaWaGwa(baseTitle)} 비슷한 곡`;
+  return `${head} · ${what} ${n}곡`;
+}
 
 /* ───────────── 타입 ───────────── */
 
@@ -747,12 +787,22 @@ export class Deck {
     void this.collect();
   }
 
-  /** 소리 방향 바꾸기: 대기열 정렬 기준만 바꾼다 */
-  setMode(mode: SoundMode) {
-    if (this.mode === mode) return;
+  /**
+   * 소리 방향 바꾸기: 지금 보이는 카드는 두고, 바로 다음 카드부터 새 기준으로 다시 고른다.
+   * 알림용으로 지금 후보 중 맞는 곡 수를 돌려준다 (같은 방향을 다시 누르면 null)
+   */
+  setMode(mode: SoundMode): { baseTitle: string | null; n: number; pending: number } | null {
+    if (this.mode === mode) return null;
     this.mode = mode;
     this.requeue();
     this.emit();
+    const base = this.origin_?.features;
+    const cands = [...this.queue.slice(1), ...this.pool];
+    return {
+      baseTitle: base ? (this.origin_?.title ?? null) : null,
+      n: base ? cands.filter((c) => c.features && modeMatch(mode, base, c.features)).length : 0,
+      pending: cands.filter((c) => c.features === undefined).length,
+    };
   }
 
   /** 지금 보이는 카드는 두고, 나머지 대기열 카드를 후보로 돌려 새 기준으로 다시 고른다 */
@@ -1131,7 +1181,8 @@ export class Deck {
     while (this.queue.length < DECK.QUEUE_MIN && this.pool.length) {
       const position = this.served + 1;
       if (position % DECK.CONTRAST_EVERY === 0) this.contrastDebt = Math.max(this.contrastDebt, 1);
-      if (base && this.contrastDebt > 0 && !this.focusId) {
+      // 신나게·잔잔하게로 정한 동안에는 '다른 분위기' 카드를 끼우지 않는다 (방향이 흐려지지 않도록)
+      if (base && this.contrastDebt > 0 && !this.focusId && (this.mode === "similar" || this.mode === "new")) {
         const lastVia = this.queue[this.queue.length - 1]?.via[0]?.personId;
         const scored = this.pool
           .filter((c) => c.features && this.artistOk(c) && simLevel(base, c.features) !== "매우 비슷")
@@ -1158,13 +1209,19 @@ export class Deck {
       const usable = this.pool.filter((c) => this.artistOk(c));
       let chosen: DeckCard | undefined;
       if (usable.length) {
+        // 비슷한 분위기가 아닌 방향은 후보 전체에서 방향에 맞는 위쪽 절반 안에서만 고른다 (사람 안에서만 정렬하면 방향이 안 느껴진다)
+        let from = usable;
+        if (this.mode !== "similar" && base && usable.length > 2) {
+          const ranked = this.byMode(usable);
+          from = ranked.slice(0, Math.max(2, Math.ceil(ranked.length / 2)));
+        }
         // 후보가 있는 인물 중 비중 비례로 한 명
-        const ids = [...new Set(usable.map((c) => c.via[0].personId))];
+        const ids = [...new Set(from.map((c) => c.via[0].personId))];
         const pid = weightedPick(ids, (id) => {
           const p = this.people.get(id);
           return p ? this.effWeight(p) : WEIGHT.MIN;
         });
-        chosen = this.byMode(usable.filter((c) => c.via[0].personId === pid))[0];
+        chosen = this.byMode(from.filter((c) => c.via[0].personId === pid))[0];
       }
       // 보여 줄 카드가 하나도 없거나 후보가 가득 찼으면 같은 가수 규칙을 푼다 (멈춤 방지)
       if (!chosen && (relax || this.exhausted || this.queue.length === 0 || this.pool.length >= DECK.POOL_MAX))

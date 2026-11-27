@@ -2,7 +2,17 @@
 import clsx from "clsx";
 import { ExternalLink, Loader2, Pause, Play } from "lucide-react";
 import type { AudioFeatures } from "@/lib/audio";
-import { PERFORMER_ROLE, reasonText, simLevel, soundDiff, type CardPerson, type DeckCard, type Via } from "@/lib/deck";
+import {
+  PERFORMER_ROLE,
+  reasonText,
+  simLevel,
+  soundDiff,
+  type CardPerson,
+  type DeckCard,
+  type SoundMode,
+  type Via,
+} from "@/lib/deck";
+import { similarity } from "@/lib/audio";
 import { Cover } from "./Cover";
 import { SWIPE, dragIntent, useSwipe, type DragState, type SwipeDir } from "./useSwipe";
 
@@ -116,6 +126,8 @@ function Reason({
 export function SwipeCard({
   card,
   base,
+  baseTitle,
+  mode,
   status,
   onSwipe,
   onTap,
@@ -127,6 +139,10 @@ export function SwipeCard({
   card: DeckCard;
   /** 시작 곡 소리 특성 */
   base: AudioFeatures | null | undefined;
+  /** 시작 곡 제목 (소리 문장에서 "Flutter보다"처럼 쓴다) */
+  baseTitle?: string;
+  /** 선택한 소리 방향 */
+  mode: SoundMode;
   status: "idle" | "loading" | "playing" | "paused" | "blocked";
   onSwipe: (dir: SwipeDir) => void;
   onTap: () => void;
@@ -145,6 +161,21 @@ export function SwipeCard({
   const level = !card.isOrigin && base && card.features ? simLevel(base, card.features) : null;
   const diffs = !card.isOrigin && base && card.features ? soundDiff(base, card.features) : [];
   const noPreview = card.preview === null;
+  // 선택한 방향과 관련된 값 하나를 시작 곡과 막대로 비교 (숫자는 보이지 않는다)
+  const f = card.features;
+  const clamp = (x: number) => Math.max(0, Math.min(1, x));
+  const bar =
+    !card.isOrigin && base && f && (mode === "energetic" || mode === "calm")
+      ? {
+          label: "에너지",
+          rows: [
+            { name: baseTitle ?? "시작 곡", v: clamp(base.energy), strong: false },
+            { name: "이 곡", v: clamp(f.energy), strong: true },
+          ],
+        }
+      : !card.isOrigin && base && f && mode === "new"
+        ? { label: "분위기 차이", rows: [{ name: "이 곡", v: clamp((1 - similarity(base, f)) / 0.5), strong: true }] }
+        : null;
   // 이 곡을 만든 사람: 색인 카드는 작품 조각의 크레딧(이름을 받는 동안은 데려온 사람), API 카드는 지금 가진 정보
   const makers: CardPerson[] =
     card.credits ??
@@ -249,8 +280,24 @@ export function SwipeCard({
           <p className="mt-3 text-[14px] leading-relaxed text-[#6E6E73]">
             {!card.contrast && <span className="font-semibold text-black">{level}</span>}
             {!card.contrast && diffs.length > 0 && <span>, </span>}
-            {diffs.length > 0 ? `시작 곡보다 ${diffs.join(", ")} 곡` : card.contrast ? "" : " 분위기"}
+            {diffs.length > 0 ? `${baseTitle ?? "시작 곡"}보다 ${diffs.join(", ")} 곡` : card.contrast ? "" : " 분위기"}
           </p>
+        )}
+
+        {bar && (
+          <div className="mt-3" aria-label={`${bar.label}: 시작 곡과 비교`}>
+            <p className="text-[12px] text-[#9A9A9E]">{bar.label}</p>
+            <div className="mt-1 space-y-1">
+              {bar.rows.map((r) => (
+                <div key={r.name} className="flex items-center gap-2">
+                  <span className="w-[56px] shrink-0 truncate text-[11px] text-[#6E6E73]">{r.name}</span>
+                  <div className="h-1 flex-1 rounded-full bg-[#EFEFEF]">
+                    <div className={clsx("h-1 rounded-full", r.strong ? "bg-black" : "bg-[#B4B4B8]")} style={{ width: `${Math.round(r.v * 100)}%` }} />
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
         )}
 
         {(loadingPreview || blocked) && (
