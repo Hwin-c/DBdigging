@@ -312,6 +312,8 @@ export function SwipeApp() {
                 onTap={toggle}
                 focusId={snap.focusId}
                 onFocus={(id) => focus(id)}
+                onDig={(p) => deckRef.current?.digPerson(p, card.title)}
+                onSinger={() => void deckRef.current?.digSinger(card)}
               />
             )}
 

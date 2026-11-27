@@ -2,7 +2,7 @@
 import clsx from "clsx";
 import { ExternalLink, Loader2, Pause, Play } from "lucide-react";
 import type { AudioFeatures } from "@/lib/audio";
-import { reasonText, simLevel, soundDiff, type DeckCard, type Via } from "@/lib/deck";
+import { PERFORMER_ROLE, reasonText, simLevel, soundDiff, type CardPerson, type DeckCard, type Via } from "@/lib/deck";
 import { Cover } from "./Cover";
 import { SWIPE, dragIntent, useSwipe, type DragState, type SwipeDir } from "./useSwipe";
 
@@ -121,6 +121,8 @@ export function SwipeCard({
   onTap,
   focusId,
   onFocus,
+  onDig,
+  onSinger,
 }: {
   card: DeckCard;
   /** 시작 곡 소리 특성 */
@@ -131,6 +133,10 @@ export function SwipeCard({
   focusId: string | null;
   /** 인물 이름을 누르면 그 사람에게 집중 */
   onFocus: (personId: string) => void;
+  /** '이 곡을 만든 사람'을 누르면 그 사람으로 파기 */
+  onDig: (p: CardPerson) => void;
+  /** 가수를 누르면 가수 축(그 가수가 부른 다른 곡) */
+  onSinger: () => void;
 }) {
   const { drag, handlers } = useSwipe({ onSwipe, onTap });
   const playing = status === "playing";
@@ -139,6 +145,12 @@ export function SwipeCard({
   const level = !card.isOrigin && base && card.features ? simLevel(base, card.features) : null;
   const diffs = !card.isOrigin && base && card.features ? soundDiff(base, card.features) : [];
   const noPreview = card.preview === null;
+  // 이 곡을 만든 사람: 색인 카드는 작품 조각의 크레딧(이름을 받는 동안은 데려온 사람), API 카드는 지금 가진 정보
+  const makers: CardPerson[] =
+    card.credits ??
+    card.via
+      .filter((v) => v.role !== PERFORMER_ROLE)
+      .map((v) => ({ personId: v.personId, name: v.name, disambiguation: v.disambiguation, role: v.role, roles: [v.role] }));
   const yt = `https://www.youtube.com/results?search_query=${encodeURIComponent(`${card.title} ${card.artist}`)}`;
   // Spotify는 API 없이 검색 주소만 연다 (개발 모드 제한, 키를 브라우저에 둘 수 없음)
   const spotify = `https://open.spotify.com/search/${encodeURIComponent(`${card.title} ${card.artist}`)}`;
@@ -196,6 +208,42 @@ export function SwipeCard({
             </li>
           ))}
         </ul>
+
+        <section aria-label="이 곡을 만든 사람" className="mt-4">
+          <h3 className="text-[12px] text-[#9A9A9E]">이 곡을 만든 사람</h3>
+          <ul className="mt-1.5 flex flex-wrap gap-1.5">
+            {makers.map((p) => (
+              <li key={p.personId}>
+                <button
+                  type="button"
+                  onClick={() => onDig(p)}
+                  aria-pressed={focusId === p.personId}
+                  title={focusId === p.personId ? `${p.name} 집중 해제` : `${p.name}으로 파기`}
+                  className={clsx(
+                    "min-h-[32px] rounded-full border px-3 text-[13px]",
+                    focusId === p.personId ? "border-black bg-black text-white" : "border-[#E5E5E5] text-black hover:border-black",
+                  )}
+                >
+                  {p.name} <span className={focusId === p.personId ? "text-[#D4D4D4]" : "text-[#9A9A9E]"}>{p.role}</span>
+                </button>
+              </li>
+            ))}
+            <li>
+              <button
+                type="button"
+                onClick={onSinger}
+                aria-pressed={focusId === card.primaryArtist}
+                title={`${card.artist}가 부른 다른 곡 파기`}
+                className={clsx(
+                  "min-h-[32px] rounded-full border px-3 text-[13px]",
+                  focusId === card.primaryArtist ? "border-black bg-black text-white" : "border-[#E5E5E5] text-black hover:border-black",
+                )}
+              >
+                {card.artist} <span className={focusId === card.primaryArtist ? "text-[#D4D4D4]" : "text-[#9A9A9E]"}>가수</span>
+              </button>
+            </li>
+          </ul>
+        </section>
 
         {level && (
           <p className="mt-3 text-[14px] leading-relaxed text-[#6E6E73]">

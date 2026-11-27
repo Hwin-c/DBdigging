@@ -1,11 +1,13 @@
 "use client";
 import clsx from "clsx";
-import { X } from "lucide-react";
-import { useEffect, useRef } from "react";
+import { ChevronDown, X } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
 import type { DeckSnapshot } from "@/lib/deck";
 
-/** "지금 파는 사람들"에 보일 최대 인원 */
+/** "따라가는 사람" 펼쳤을 때 보일 최대 인원 */
 const PEOPLE_SHOWN = 8;
+/** 접힌 한 줄에 이름으로 보일 인원 (나머지는 "외 N명") */
+const PEOPLE_LINE = 3;
 /** 비중 점 지름 (px): 최소 + 비중당 증가, 최대 */
 const DOT = { MIN: 6, PER_WEIGHT: 4, MAX: 22 } as const;
 
@@ -26,6 +28,9 @@ export function DigFlow({ snap, onFocus }: { snap: DeckSnapshot; onFocus: (id: s
   const origin = snap.origin;
   const focused = snap.people.find((p) => p.id === snap.focusId);
   const people = snap.people.slice(0, PEOPLE_SHOWN);
+  const [open, setOpen] = useState(false);
+  const lineNames = snap.people.slice(0, PEOPLE_LINE).map((p) => p.name);
+  const rest = Math.max(0, snap.people.length - PEOPLE_LINE);
 
   return (
     <div>
@@ -70,11 +75,23 @@ export function DigFlow({ snap, onFocus }: { snap: DeckSnapshot; onFocus: (id: s
         </p>
       )}
 
-      {/* 지금 파는 사람들 */}
+      {/* 따라가는 사람: 접으면 한 줄(비중 상위 3명 + 외 N명), 누르면 펼침 */}
       {people.length > 0 && (
-        <section aria-label="지금 파는 사람들" className="mt-3">
-          <div className="flex items-baseline justify-between gap-2">
-            <h2 className="text-[13px] text-[#6E6E73]">지금 파는 사람들</h2>
+        <section aria-label="따라가는 사람" className="mt-3">
+          <div className="flex items-center justify-between gap-2">
+            <button
+              type="button"
+              onClick={() => setOpen((v) => !v)}
+              aria-expanded={open}
+              className="flex min-h-[32px] min-w-0 items-center gap-1.5 text-left text-[13px] text-[#6E6E73] hover:text-black"
+            >
+              <span className="shrink-0">따라가는 사람</span>
+              <span className="truncate font-semibold text-black">
+                {lineNames.join(", ")}
+                {rest > 0 ? ` 외 ${rest}명` : ""}
+              </span>
+              <ChevronDown aria-hidden className={clsx("h-3.5 w-3.5 shrink-0 motion-safe:transition-transform", open && "rotate-180")} />
+            </button>
             {focused && (
               <button
                 type="button"
@@ -85,8 +102,13 @@ export function DigFlow({ snap, onFocus }: { snap: DeckSnapshot; onFocus: (id: s
               </button>
             )}
           </div>
-          {/* 모바일은 한 줄 가로 스크롤 (카드와 버튼이 화면 안에 들어오도록), 넓은 화면은 줄바꿈 */}
-          <ul className="-mx-4 mt-2 flex gap-1.5 overflow-x-auto px-4 pb-1 md:mx-0 md:flex-wrap md:overflow-visible md:px-0">
+          {/* 펼치면 비중 순 전체 목록. 모바일은 한 줄 가로 스크롤, 넓은 화면은 줄바꿈 */}
+          <ul
+            className={clsx(
+              "-mx-4 mt-2 flex gap-1.5 overflow-x-auto px-4 pb-1 md:mx-0 md:flex-wrap md:overflow-visible md:px-0",
+              !open && "hidden",
+            )}
+          >
             {people.map((p) => {
               const on = p.id === snap.focusId;
               return (

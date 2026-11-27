@@ -6,6 +6,7 @@ import {
   getArtistCredits,
   getEnglishAliases,
   getRecording,
+  getRecordingLite,
   isCoreRole,
   lookupRecordings,
   normalizeTitle,
@@ -145,7 +146,25 @@ export interface DeckCard {
   cover?: string;
   /** 이 곡이 속한 작품 ID (영문 별칭 조회용) */
   workId?: string;
+  /** 이 곡을 만든 사람 (색인 카드: 작품 조각의 크레딧, 이름은 앞쪽 카드가 되면 채움). 없으면 via로 대신 보여 준다 */
+  credits?: CardPerson[];
+  /** 색인 작품 조각의 크레딧 [인물 ID, 역할 코드] (credits를 채우기 전 원본) */
+  idxCredits?: Array<[string, string]>;
 }
+
+/** 카드에 보이는 '이 곡을 만든 사람' */
+export interface CardPerson {
+  personId: string;
+  name: string;
+  disambiguation?: string;
+  /** 화면에 보일 역할 이름 */
+  role: string;
+  /** 이 사람을 파면 쓰는 역할들 */
+  roles: string[];
+}
+
+/** 색인 역할 코드의 화면 이름 */
+const IDX_ROLE_LABEL: Record<string, string> = { C: "작곡", L: "작사", W: "작사·작곡", A: "편곡" };
 
 export interface DeckProgress {
   /** origin: 시작 곡 크레딧 읽는 중, collect: 후보 모으는 중 */
@@ -342,6 +361,8 @@ async function specialIds(credits: PersonCredit[], artists: ArtistLite[] = []): 
 interface QItem extends PersonItem {
   viaIdx?: boolean;
   rep?: IdxRep;
+  /** 작품 조각의 크레딧 */
+  credits?: Array<[string, string]>;
 }
 
 /** 가수로 쓰지 않는 특수 항목 */
@@ -682,7 +703,8 @@ export class Deck {
       const added: string[] = [];
       const special = await specialIds(d.credits, d.artists);
       if (ctl.signal.aborted) return;
-      for (const c of seedPeople(d.credits, d.artists, special)) {
+      // 가수 축은 사용자가 직접 고른 경우에만: 담은 곡의 가수는 자동으로 합류시키지 않는다
+      for (const c of seedPeople(d.credits, [], special)) {
         if (already.has(c.personId)) continue; // 데려온 인물은 이미 더함
         const p = this.people.get(c.personId);
         if (p) {
@@ -903,6 +925,7 @@ export class Deck {
           if (!w?.r?.i) continue;
           it.title = w.t;
           it.rep = w.r;
+          it.credits = w.c;
         }
         const key = normalizeTitle(it.title);
         if (this.titles.has(key)) {
@@ -989,6 +1012,7 @@ export class Deck {
         via: [this.via(x.p, x.it)],
         features: r.isrcs[0] ? undefined : null,
         workId: x.it.kind === "work" ? x.it.id : undefined,
+        idxCredits: (x.it as QItem).credits,
       };
       this.pool.push(card);
       this.loadFeatures(card);
@@ -1193,7 +1217,73 @@ export class Deck {
   private prefetch() {
     for (const c of this.queue.slice(0, DECK.PREFETCH)) {
       if (c.preview === undefined) void this.fetchPreview(c);
+      void this.loadCredits(c);
     }
+  }
+
+  /** 색인 카드의 크레딧 인물 이름을 채운다 (앞쪽 카드만: 인물 조각 파일을 받아야 하므로) */
+  private loadingCredits = new Set<string>();
+  private async loadCredits(card: DeckCard) {
+    if (card.credits || !card.idxCredits || this.loadingCredits.has(card.id)) return;
+    this.loadingCredits.add(card.id);
+    const out: CardPerson[] = [];
+    for (const [pid, code] of card.idxCredits) {
+      const roles = IDX_ROLES[code];
+      if (!roles || out.length >= DECK.MAX_PEOPLE) continue;
+      const p = await getIdxPerson(pid);
+      if (!p || isSpecialPurpose(p)) continue;
+      out.push({ personId: pid, name: p.n, disambiguation: p.d, role: IDX_ROLE_LABEL[code], roles });
+    }
+    card.credits = out;
+    this.emit();
+  }
+
+  /** 카드의 '이 곡을 만든 사람'을 눌러 그 사람으로 파기 (대기열에 없던 사람이면 합류시킨 뒤 집중) */
+  digPerson(p: CardPerson, fromTitle?: string) {
+    if (!this.people.has(p.personId)) {
+      this.people.set(p.personId, {
+        personId: p.personId,
+        name: p.name,
+        disambiguation: p.disambiguation,
+        role: p.roles[0] ?? p.role,
+        roles: p.roles,
+        weight: WEIGHT.KEEP,
+        fromTitle,
+        exhausted: false,
+      });
+      this.exhausted = false;
+    }
+    this.focus(p.personId);
+  }
+
+  /** 카드의 가수를 눌러 가수 축으로 파기: 그 가수가 부른 다른 곡. 사용자가 직접 고른 경우에만 쓴다 */
+  async digSinger(card: DeckCard) {
+    const ctl = this.ctl;
+    if (!ctl) return;
+    let id = /^[0-9a-f]{8}-[0-9a-f]{4}-/.test(card.primaryArtist) ? card.primaryArtist : undefined;
+    if (!id) {
+      try {
+        // 색인 카드는 가수 ID가 없어 이때만 녹음을 한 번 조회한다
+        id = (await getRecordingLite(card.id, { low: true, signal: ctl.signal })).artistIds[0];
+      } catch {
+        return;
+      }
+    }
+    if (!id || ctl.signal.aborted) return;
+    if (!this.people.has(id)) {
+      this.people.set(id, {
+        personId: id,
+        name: card.artist,
+        role: PERFORMER_ROLE,
+        roles: [PERFORMER_ROLE],
+        performer: true,
+        weight: WEIGHT.PERFORMER,
+        fromTitle: card.title,
+        exhausted: false,
+      });
+      this.exhausted = false;
+    }
+    this.focus(id);
   }
 
   /** 재생 버튼·넘길 때 쓰는 미리듣기 조회 (미리 받는 중이면 그 결과를 기다린다) */
