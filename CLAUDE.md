@@ -30,3 +30,8 @@
 - 소리 방향(비슷하게·더 신나게·더 잔잔하게·새롭게)은 대기열 정렬만 바꾸고, 카드의 인물 이름을 누르면 그 사람에게 집중(비중 ×8). 다양성 규칙(같은 가수 5장에 1곡, 3장마다 다른 분위기)은 `DECK` 상수
 - 오디오는 audio 요소 하나(`src/lib/preview.ts`의 player). 넘기기·담기는 먼저 `player.stop()`, 재생 요청은 번호(seq)로 늦게 온 이전 요청을 버린다. 미리듣기 URL은 메모리에만 둔다
 - 디자인은 흰 배경·흑백·LP 슬리브 컨셉이고 `.claude/skills/frontend-design` 스킬을 따른다. 승인된 출처 추가: 하단에 "Cover: Cover Art Archive"
+
+
+- 색인은 scripts/build_index.py로 만든다. public/idx는 git에 없고(.gitignore), 입력은 Desktop\mb_index_out
+- 다른 PC에서 빌드하면 색인부터 다시 만들어야 한다 (없으면 out/idx가 비어 색인 없이 API 경로로만 동작)
+- 주소에 ?noindex=1을 붙이면 색인을 건너뛰어 API 경로와 비교할 수 있다 (콘솔에 index hit / api fallback 로그)
