@@ -15,6 +15,7 @@ import {
   type PersonItem,
 } from "./mb/api";
 import { findPreview, type PreviewResult } from "./preview";
+import { getIdxPerson, getIdxWork, IDX_ROLES, isSpecialPurpose, type IdxRep } from "./idx";
 
 /* ───────────── 상수 ───────────── */
 
@@ -306,6 +307,36 @@ interface SeedPerson {
   role: string;
   /** 가수 축 인물 (핵심 크레딧이 없는 곡에서만) */
   performer?: boolean;
+  /** 이 곡에서의 핵심 역할 전부 (색인 조회 대상인지 판단) */
+  roles: string[];
+}
+
+/** 색인이 가진 작품 크레딧 역할 (프로듀서 크레딧은 색인에 없다) */
+const IDX_CREDIT_ROLES = ["작곡", "작사", "작사·작곡", "편곡"];
+
+/** 색인(작품 크레딧)으로 조회할 수 있는 인물인지: 가수 축·프로듀서로만 나온 인물은 API 경로 */
+function idxEligible(p: { performer?: boolean; roles: string[] }): boolean {
+  return !p.performer && p.roles.some((r) => IDX_CREDIT_ROLES.includes(r));
+}
+
+/** 색인에서 '특수 목적 항목'([traditional], Various Artists 등)인 인물 ID. 색인이 꺼져 있으면 비어 있다 */
+async function specialIds(credits: PersonCredit[], artists: ArtistLite[] = []): Promise<Set<string>> {
+  const ids = new Set<string>();
+  for (const c of credits) if (c.roles.some(isCoreRole)) ids.add(c.artist.id);
+  for (const a of artists) if (a.id) ids.add(a.id);
+  const out = new Set<string>();
+  await Promise.all(
+    [...ids].map(async (id) => {
+      if (isSpecialPurpose(await getIdxPerson(id))) out.add(id);
+    }),
+  );
+  return out;
+}
+
+/** 색인 경로로 만든 후보 항목: 제목은 대표 녹음을 고를 때 작품 조각에서 채운다 */
+interface QItem extends PersonItem {
+  viaIdx?: boolean;
+  rep?: IdxRep;
 }
 
 /** 가수로 쓰지 않는 특수 항목 */
@@ -316,24 +347,25 @@ const NOT_A_SINGER = /^(various artists|\[unknown\]|\[anonymous\]|\[no artist\])
  * - 핵심 역할(작곡·작사·편곡·프로듀서) 참여자만. 리믹서·악기 같은 그 밖의 크레딧은 쓰지 않는다
  * - 핵심 크레딧이 0명일 때(형제 녹음 보충 후에도)만 가수를 가수 축으로 쓴다
  */
-function seedPeople(credits: PersonCredit[], artists: ArtistLite[] = []): SeedPerson[] {
+function seedPeople(credits: PersonCredit[], artists: ArtistLite[] = [], special: Set<string> = new Set()): SeedPerson[] {
   const seen = new Set<string>();
   const out: SeedPerson[] = [];
   for (const c of credits) {
     if (out.length >= DECK.MAX_PEOPLE) break;
-    if (!c.roles.some(isCoreRole) || seen.has(c.artist.id)) continue;
+    if (!c.roles.some(isCoreRole) || seen.has(c.artist.id) || special.has(c.artist.id)) continue;
     seen.add(c.artist.id);
     out.push({
       personId: c.artist.id,
       name: c.artist.name,
       disambiguation: c.artist.disambiguation,
       role: c.roles.find(isCoreRole)!,
+      roles: c.roles.filter(isCoreRole),
     });
   }
   if (out.length) return out;
   for (const a of artists) {
     if (out.length >= DECK.MAX_PEOPLE) break;
-    if (!a.id || seen.has(a.id) || NOT_A_SINGER.test(a.name)) continue;
+    if (!a.id || seen.has(a.id) || NOT_A_SINGER.test(a.name) || special.has(a.id)) continue;
     seen.add(a.id);
     out.push({
       personId: a.id,
@@ -341,6 +373,7 @@ function seedPeople(credits: PersonCredit[], artists: ArtistLite[] = []): SeedPe
       disambiguation: a.disambiguation,
       role: PERFORMER_ROLE,
       performer: true,
+      roles: [PERFORMER_ROLE],
     });
   }
   return out;
@@ -375,9 +408,11 @@ interface PersonState {
   role: string;
   /** 가수 축 인물 */
   performer?: boolean;
+  /** 이 곡에서의 핵심 역할 전부 */
+  roles: string[];
   weight: number;
   fromTitle?: string;
-  queue?: PersonItem[];
+  queue?: QItem[];
   exhausted: boolean;
 }
 
@@ -474,8 +509,24 @@ export class Deck {
   }
 
   private emit() {
+    this.traceReady();
     const s = this.snapshot();
     this.listeners.forEach((l) => l(s));
+  }
+
+  /** 비교용 개발자 콘솔 로그: 추천 카드가 처음 대기열에 들어온 시각 (시작 후 ms)과 이유 문장 */
+  private traceT0 = 0;
+  private traceIds = new Set<string>();
+  private traceReady() {
+    for (const c of this.queue) {
+      if (c.isOrigin || this.traceIds.has(c.id)) continue;
+      this.traceIds.add(c.id);
+      const v = c.via[0];
+      const reason = v ? reasonText({ ...v, name: this.displayName(v.personId, v.name, v.disambiguation) }) : "";
+      console.info(
+        `[dig] card ${this.traceIds.size} ready +${Math.round(performance.now() - this.traceT0)}ms | ${c.title} - ${c.artist} | ${reason}`,
+      );
+    }
   }
 
   get origin(): Origin | undefined {
@@ -510,6 +561,8 @@ export class Deck {
     this.error = null;
     this.exhausted = false;
     this.progress = { phase: "origin", done: 0, total: 1 };
+    this.traceT0 = performance.now();
+    this.traceIds = new Set();
     this.emit();
 
     let o: Origin;
@@ -526,7 +579,9 @@ export class Deck {
     this.origin_ = o;
     this.titles.add(normalizeTitle(o.title));
     this.path = [{ kind: "song", id: o.id, label: o.title }];
-    const initialPeople = seedPeople(o.credits, o.artists);
+    const special = await specialIds(o.credits, o.artists);
+    if (ctl.signal.aborted) return;
+    const initialPeople = seedPeople(o.credits, o.artists, special);
     for (const p of initialPeople) {
       this.people.set(p.personId, { ...p, weight: p.performer ? WEIGHT.PERFORMER : WEIGHT.ORIGIN, exhausted: false });
     }
@@ -619,7 +674,9 @@ export class Deck {
       if (ctl.signal.aborted) return;
       const already = new Set(card.via.map((v) => v.personId));
       const added: string[] = [];
-      for (const c of seedPeople(d.credits, d.artists)) {
+      const special = await specialIds(d.credits, d.artists);
+      if (ctl.signal.aborted) return;
+      for (const c of seedPeople(d.credits, d.artists, special)) {
         if (already.has(c.personId)) continue; // 데려온 인물은 이미 더함
         const p = this.people.get(c.personId);
         if (p) {
@@ -631,6 +688,7 @@ export class Deck {
             disambiguation: c.disambiguation,
             role: c.role,
             performer: c.performer,
+            roles: c.roles,
             weight: c.performer ? WEIGHT.PERFORMER : WEIGHT.KEEP,
             fromTitle: card.title,
             exhausted: false,
@@ -802,17 +860,22 @@ export class Deck {
     // 1) 크레딧 읽기
     for (const p of toRead) {
       try {
-        const items = (
-          await getArtistCredits(p.personId, {
-            ...opts,
-            includePerformer: !!p.performer,
-          })
-        ).items;
-        const fresh = items.filter((it) => !this.titles.has(normalizeTitle(it.title)));
-        const same = fresh.filter((it) => it.roles.includes(p.role));
-        // 나머지는 핵심 역할(작곡·작사·편곡·프로듀서)로 참여한 곡만 (리믹서·보컬 디렉터·악기 등 제외)
-        const rest = fresh.filter((it) => !it.roles.includes(p.role) && it.roles.some(isCoreRole));
-        p.queue = [...spread(same, DECK.PERSON_QUEUE_SAME_ROLE), ...spread(rest, DECK.PERSON_QUEUE_OTHER)];
+        const fromIdx = await this.idxQueue(p);
+        if (fromIdx) {
+          p.queue = fromIdx;
+        } else {
+          const items = (
+            await getArtistCredits(p.personId, {
+              ...opts,
+              includePerformer: !!p.performer,
+            })
+          ).items;
+          const fresh = items.filter((it) => !this.titles.has(normalizeTitle(it.title)));
+          const same = fresh.filter((it) => it.roles.includes(p.role));
+          // 나머지는 핵심 역할(작곡·작사·편곡·프로듀서)로 참여한 곡만 (리믹서·보컬 디렉터·악기 등 제외)
+          const rest = fresh.filter((it) => !it.roles.includes(p.role) && it.roles.some(isCoreRole));
+          p.queue = [...spread(same, DECK.PERSON_QUEUE_SAME_ROLE), ...spread(rest, DECK.PERSON_QUEUE_OTHER)];
+        }
       } catch {
         if (opts.signal.aborted) throw new AbortedError();
         p.exhausted = true; // 이 인물은 건너뜀
@@ -821,12 +884,20 @@ export class Deck {
     }
 
     // 2) 뽑힌 인물마다 ROUND_PER_PERSON곡씩 꺼낸다
-    const picked: Array<{ p: PersonState; it: PersonItem }> = [];
+    const picked: Array<{ p: PersonState; it: QItem }> = [];
     for (const p of chosen) {
       if (!p.queue || p.exhausted) continue;
       let n = 0;
       while (n < DECK.ROUND_PER_PERSON && p.queue.length) {
         const it = p.queue.shift()!;
+        if (it.viaIdx && !it.rep) {
+          // 색인 항목: 작품 조각에서 제목·대표 녹음을 채운다 (없으면 건너뜀)
+          const w = await getIdxWork(it.id);
+          if (opts.signal.aborted) throw new AbortedError();
+          if (!w?.r?.i) continue;
+          it.title = w.t;
+          it.rep = w.r;
+        }
         const key = normalizeTitle(it.title);
         if (this.titles.has(key)) {
           this.addVia(key, p, it);
@@ -845,10 +916,27 @@ export class Deck {
       return;
     }
 
-    // 3) 작품 → 대표 녹음 (1건씩, 캐시)
-    const works = picked.filter((x) => x.it.kind === "work");
+    // 3) 작품 → 대표 녹음. 색인에서 온 항목은 이미 대표 녹음(ISRC 포함)을 알고 있고, 나머지는 API로 1건씩 (캐시)
+    const idxRecs = new Map<string, BatchRecording>();
+    const recIds = new Map<{ p: PersonState; it: QItem }, string>();
+    for (const x of picked as Array<{ p: PersonState; it: QItem }>) {
+      const r = x.it.rep;
+      if (!r) continue;
+      idxRecs.set(r.id, {
+        id: r.id,
+        title: r.t,
+        artist: r.a,
+        artistIds: [],
+        disambiguation: "",
+        length: null,
+        firstReleaseDate: r.y ? String(r.y) : "",
+        isrcs: r.i ? [r.i] : [],
+        video: false,
+      });
+      recIds.set(x, r.id);
+    }
+    const works = picked.filter((x) => x.it.kind === "work" && !(x.it as QItem).rep);
     if (works.length) step(works.length);
-    const recIds = new Map<{ p: PersonState; it: PersonItem }, string>();
     for (const x of picked) if (x.it.kind === "recording") recIds.set(x, x.it.id);
     for (const x of works) {
       try {
@@ -860,14 +948,15 @@ export class Deck {
       step();
     }
 
-    // 4) 녹음 묶음 조회 (rid 검색 1회)
+    // 4) 녹음 묶음 조회 (rid 검색 1회). 색인 항목은 건너뜀
     let recs: Map<string, BatchRecording>;
     try {
-      recs = await lookupRecordings([...recIds.values()], opts);
+      recs = await lookupRecordings([...recIds.values()].filter((id) => !idxRecs.has(id)), opts);
     } catch {
       if (opts.signal.aborted) throw new AbortedError();
       recs = new Map();
     }
+    for (const [id, r] of idxRecs) recs.set(id, r);
     if (opts.signal.aborted) throw new AbortedError();
     this.progress = { ...this.progress, done: this.progress.total };
 
@@ -883,6 +972,7 @@ export class Deck {
       }
       this.titles.add(rkey);
       this.titles.add(key);
+      console.info(idxRecs.has(id) ? "[idx] index hit" : "[idx] api fallback", `${r.title} - ${r.artist} (${x.p.name})`);
       const card: DeckCard = {
         id: r.id,
         title: r.title,
@@ -896,6 +986,31 @@ export class Deck {
       this.pool.push(card);
       this.loadFeatures(card);
     }
+  }
+
+  /**
+   * 색인에서 인물의 후보 대기열을 만든다. 색인에 없거나 조회 대상이 아니면 null (→ API 경로).
+   * 작품 제목은 뽑을 때 작품 조각에서 채우므로 여기서는 작품 ID·역할만 쓴다.
+   */
+  private async idxQueue(p: PersonState): Promise<QItem[] | null> {
+    if (!idxEligible(p)) {
+      console.info("[idx] api fallback", p.name, p.performer ? "(performer axis)" : "(no work credit role, e.g. producer only)");
+      return null;
+    }
+    const person = await getIdxPerson(p.personId);
+    const items: QItem[] = [];
+    for (const [wid, code] of person?.w ?? []) {
+      const roles = IDX_ROLES[code];
+      if (roles) items.push({ kind: "work", id: wid, title: "", disambiguation: "", roles, viaIdx: true });
+    }
+    if (!items.length) {
+      console.info("[idx] api fallback", p.name, person ? "(no usable work in index)" : "(person not in index)");
+      return null;
+    }
+    console.info("[idx] index hit", p.name, `${items.length} works`);
+    const same = items.filter((it) => it.roles.includes(p.role));
+    const rest = items.filter((it) => !it.roles.includes(p.role));
+    return [...spread(same, DECK.PERSON_QUEUE_SAME_ROLE), ...spread(rest, DECK.PERSON_QUEUE_OTHER)];
   }
 
   private via(p: PersonState, it: PersonItem): Via {
