@@ -29,6 +29,8 @@ const EMPTY: DeckSnapshot = {
 const JOIN_TOAST_MS = 2600;
 /** 소리 방향을 바꾼 직후 알림 표시 시간 (ms) */
 const MODE_TOAST_MS = 3600;
+/** 시작 화면에 떠 있는 커버 최대 장수 (큰 화면 자리 수) */
+const FLOATING_MAX = 9;
 
 function usePlayer(): PlayerState {
   const [s, setS] = useState<PlayerState>(player.state);
@@ -163,6 +165,7 @@ export function SwipeApp() {
               artist: c.artist,
               releaseGroupId: c.releaseGroupId,
               isrc: c.isrc,
+              cover: c.cover ?? c.preview?.cover,
               people: c.via.map((v) => ({ id: v.personId, name: v.name, role: v.role })),
               addedAt: Date.now(),
             },
@@ -202,12 +205,13 @@ export function SwipeApp() {
     return () => clearTimeout(t);
   }, [leaving]);
 
+  const examples = EXAMPLES;
+  // 시작 화면에 떠 있는 커버: 담은 곡이 있으면 그 커버(최근 담은 순, 노트는 최근 것이 앞), 모자라면 예시 곡으로 채운다
   const floating: FloatingSong[] = useMemo(() => {
-    const fromNote = note.slice(0, 6).map((n) => ({ ...n }));
-    const list = [...EXAMPLES, ...fromNote];
+    const list = [...note.slice(0, FLOATING_MAX), ...examples];
     const seen = new Set<string>();
     return list.filter((s) => !seen.has(s.id) && seen.add(s.id));
-  }, [note]);
+  }, [note, examples]);
 
   const removeNote = (id: string) =>
     setNote((prev) => {

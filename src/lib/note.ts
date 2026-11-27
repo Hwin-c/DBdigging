@@ -14,6 +14,8 @@ export interface NoteItem {
   artist: string;
   releaseGroupId?: string;
   isrc?: string;
+  /** 담을 때 알고 있던 커버 주소 (Deezer·iTunes, 앨범 묶음 ID가 없는 색인 곡용) */
+  cover?: string;
   /** 이 곡을 찾게 해 준 크레딧 인물 */
   people: NotePerson[];
   addedAt: number;

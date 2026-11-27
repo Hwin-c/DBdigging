@@ -39,6 +39,8 @@ export interface FloatingSong {
   artist: string;
   isrc?: string;
   releaseGroupId?: string;
+  /** 알고 있는 커버 주소 (담은 곡) */
+  cover?: string;
 }
 
 function FloatingCovers({
@@ -80,6 +82,7 @@ function FloatingCovers({
             <Cover
               // 시작 화면은 빠른 Deezer 커버(ISRC)를 먼저, 없으면 Cover Art Archive
               releaseGroupId={s.releaseGroupId}
+              fallback={s.cover}
               preferDeezer
               isrc={s.isrc}
               title={s.title}
