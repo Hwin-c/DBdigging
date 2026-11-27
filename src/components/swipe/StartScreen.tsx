@@ -4,8 +4,10 @@ import { Loader2, Search } from "lucide-react";
 import { useState } from "react";
 import { useAsync } from "@/hooks/useAsync";
 import { searchRecordings } from "@/lib/mb/api";
+import type { NoteItem } from "@/lib/note";
 import { Cover } from "./Cover";
-import { EXAMPLES, type ExampleSong } from "./examples";
+import type { ExampleSong } from "./examples";
+import { NotePeople } from "./NotePeople";
 
 /**
  * 흩어져 떠 있는 커버 자리 (화면 비율 %). 가운데 제목·검색 영역은 비워 둔다.
@@ -99,10 +101,19 @@ function FloatingCovers({
 
 export function StartScreen({
   floating,
+  examples,
+  examplesLabel,
+  note,
   onStart,
 }: {
-  /** 떠 있는 커버: 예시 곡 + 디깅 노트에 담은 곡 */
+  /** 떠 있는 커버: 디깅 노트에 담은 곡 먼저, 모자라면 예시 곡 */
   floating: FloatingSong[];
+  /** 시작 화면 예시 곡 */
+  examples: ExampleSong[];
+  /** 예시 곡 머리글 ("요즘 많이 듣는 곡 · 기준 2026-11-27"). 기본 예시 곡이면 없음 */
+  examplesLabel?: string;
+  /** 디깅 노트 (담은 곡의 사람들용) */
+  note: NoteItem[];
   onStart: (song: { id: string; title: string; artist: string }) => void;
 }) {
   const [text, setText] = useState("");
@@ -161,8 +172,10 @@ export function StartScreen({
         </form>
 
         {!showing && (
-          <div className="relative mt-5 flex max-w-[520px] flex-wrap justify-center gap-2">
-            {EXAMPLES.map((e: ExampleSong) => (
+          <div className="relative mt-5 flex max-w-[520px] flex-col items-center gap-2">
+            {examplesLabel && <p className="text-[12px] text-[#9A9A9E]">{examplesLabel}</p>}
+            <div className="flex flex-wrap justify-center gap-2">
+            {examples.map((e: ExampleSong) => (
               <button
                 key={e.id}
                 type="button"
@@ -181,8 +194,10 @@ export function StartScreen({
                 {e.title}
               </button>
             ))}
+            </div>
           </div>
         )}
+        {!showing && <NotePeople note={note} onStart={onStart} />}
       </section>
 
       {showing && (

@@ -243,7 +243,7 @@ export interface DeckSnapshot {
 
 const SEEN_KEY = "dig:seen";
 
-function loadSeen(): string[] {
+export function loadSeen(): string[] {
   try {
     const raw = localStorage.getItem(SEEN_KEY);
     const v = raw ? (JSON.parse(raw) as unknown) : [];

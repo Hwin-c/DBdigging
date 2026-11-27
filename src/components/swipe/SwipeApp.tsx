@@ -8,7 +8,7 @@ import { loadNote, saveNote, topPeople, type NoteItem } from "@/lib/note";
 import { player, type PlayerState } from "@/lib/preview";
 import { SourceFooter } from "../dig/SourceFooter";
 import { Cover } from "./Cover";
-import { EXAMPLES } from "./examples";
+import { EXAMPLES, type ExampleSong, type ExamplesFile } from "./examples";
 import { DigFlow } from "./DigFlow";
 import { StartScreen, type FloatingSong } from "./StartScreen";
 import { SwipeCard } from "./SwipeCard";
@@ -205,7 +205,21 @@ export function SwipeApp() {
     return () => clearTimeout(t);
   }, [leaving]);
 
-  const examples = EXAMPLES;
+  // 시작 화면 예시 곡: public/examples.json(요즘 많이 듣는 곡)을 읽고, 없거나 실패하면 코드의 예시 곡을 쓴다
+  const [examplesFile, setExamplesFile] = useState<ExamplesFile | null>(null);
+  useEffect(() => {
+    let off = false;
+    fetch("/examples.json")
+      .then((r) => (r.ok ? (r.json() as Promise<ExamplesFile>) : null))
+      .then((j) => {
+        if (!off && j && Array.isArray(j.songs) && j.songs.length > 0 && typeof j.date === "string") setExamplesFile(j);
+      })
+      .catch(() => undefined);
+    return () => {
+      off = true;
+    };
+  }, []);
+  const examples: ExampleSong[] = examplesFile?.songs ?? EXAMPLES;
   // 시작 화면에 떠 있는 커버: 담은 곡이 있으면 그 커버(최근 담은 순, 노트는 최근 것이 앞), 모자라면 예시 곡으로 채운다
   const floating: FloatingSong[] = useMemo(() => {
     const list = [...note.slice(0, FLOATING_MAX), ...examples];
@@ -256,7 +270,15 @@ export function SwipeApp() {
         </div>
       </header>
 
-      {!dig && <StartScreen floating={floating} onStart={start} />}
+      {!dig && (
+        <StartScreen
+          floating={floating}
+          examples={examples}
+          examplesLabel={examplesFile ? `${examplesFile.title} · 기준 ${examplesFile.date}` : undefined}
+          note={note}
+          onStart={start}
+        />
+      )}
 
       {dig && (
         <main className="mx-auto w-full max-w-[520px] px-4 pb-6">

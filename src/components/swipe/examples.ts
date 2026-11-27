@@ -7,8 +7,17 @@ export interface ExampleSong {
   id: string;
   title: string;
   artist: string;
-  isrc: string;
+  isrc?: string;
   releaseGroupId?: string;
+}
+
+/** public/examples.json (scripts/build_examples.mjs가 만든다) */
+export interface ExamplesFile {
+  title: string;
+  source: string;
+  /** 기준 날짜 (YYYY-MM-DD) */
+  date: string;
+  songs: ExampleSong[];
 }
 
 export const EXAMPLES: ExampleSong[] = [
