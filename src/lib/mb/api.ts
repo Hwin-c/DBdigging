@@ -828,15 +828,17 @@ function pickReleaseGroup(releases: MbReleaseRef[]): string | undefined {
   return scored[0]?.id;
 }
 
-/* ¦¡¦¡¦¡¦¡¦¡¦¡¦¡¦¡¦¡¦¡¦¡¦¡¦¡¦¡¦¡¦¡¦¡¦¡¦¡¦¡¦¡¦¡¦¡¦¡¦¡ ¿µ¹® º°Äª ¦¡¦¡¦¡¦¡¦¡¦¡¦¡¦¡¦¡¦¡¦¡¦¡¦¡¦¡¦¡¦¡¦¡¦¡¦¡¦¡¦¡¦¡¦¡¦¡¦¡ */
+
+/* â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ ì˜ë¬¸ ë³„ì¹­ â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 
 interface MbAliasLookup {
   aliases?: Array<{ name: string; locale?: string | null; primary?: boolean | null; type?: string | null }>;
 }
 
 /**
- * ¹Ì¸®µè±â¸¦ ¸ø Ã£¾ÒÀ» ¶§ ¿µ¹® Á¦¸ñ º°ÄªÀ» ¾ò´Â´Ù (¿¹: ¹ãÆíÁö ¡æ Through the Night). MusicBrainz 1È¸.
- * ÀÛÇ° ID°¡ ÀÖÀ¸¸é ÀÛÇ°ÀÇ aliases, ¾øÀ¸¸é ³ìÀ½ÀÇ aliases. ¶óÆ¾ ¹®ÀÚ·Î µÈ ÀÌ¸§¸¸, ¿µ¾î(en) ·ÎÄÉÀÏ ¿ì¼±.
+ * ë¯¸ë¦¬ë“£ê¸°ë¥¼ ëª» ì°¾ì•˜ì„ ë•Œ ì˜ë¬¸ ì œëª© ë³„ì¹­ì„ ì–»ëŠ”ë‹¤ (ì˜ˆ: ë°¤í¸ì§€ â†’ Through the Night). MusicBrainz 1íšŒ.
+ * ì‘í’ˆ IDê°€ ìˆìœ¼ë©´ ì‘í’ˆì˜ aliases, ì—†ìœ¼ë©´ ë…¹ìŒì˜ aliases (2026-11-27 í™•ì¸: ë°¤í¸ì§€ëŠ” ì‘í’ˆì—ë§Œ en ë³„ì¹­ì´ ìˆë‹¤).
+ * ë¼í‹´ ë¬¸ìë¡œ ëœ ì´ë¦„ë§Œ, ì˜ì–´(en) ë¡œì¼€ì¼ ìš°ì„ .
  */
 export async function getEnglishAliases(
   ids: { workId?: string; recordingId: string },
